@@ -2029,8 +2029,11 @@ def start_new_entry():
 
 st.title("🗂️ Karteikarten-Zuordnung")
 st.write(
-    f"Ordnen Sie bitte jede der **{len(CARDS)} Karten** per Drag & Drop "
-    "genau einer Kategorie zu: **Pre-A1, A1, A2, B1 oder B2**."
+    f"Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
+    "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
+    "die beschriebene Leseleistung ohne Unterstützung zuverlässig erbringt. "
+    "Anzahl der Karten: **{len(CARDS)} Karten**, "
+    "Kategorien: **Pre-A1, A1, A2, B1 oder B2**."
 )
 
 participant_id = st.text_input(
@@ -2057,8 +2060,10 @@ if st.session_state.submitted:
     st.stop()
 
 st.caption(
-    "Tipp: Ziehen Sie die Karten in die gewünschte Kategorie. "
+    "Ziehen Sie die Karten in die gewünschte Kategorie. "
     "Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt."
+    "Die Nummerierung der Karten (K1-K48)"
+    " entspricht nicht der tatsächlichen Sortierung."
 )
 
 component_result = card_sorter(
