@@ -313,6 +313,7 @@ def init_db():
 
 
 
+
 @st.cache_data(ttl=300)
 def load_cards(proficiency):
     """
@@ -335,15 +336,16 @@ def load_cards(proficiency):
                     WHERE proficiency = %s
                     ORDER BY sort_order
                     """,
-                    (str(proficiency),)
+                    (proficiency,)
                 )
-except psycopg.Error as exc:
-    st.error(
-        f"Datenbankfehler (SQLSTATE {exc.sqlstate}): "
-        f"{exc.diag.message_primary}"
-    )
-    st.stop()
+                rows = cur.fetchall()
 
+            except psycopg.Error as exc:
+                st.error(
+                    f"Datenbankfehler (SQLSTATE {exc.sqlstate}): "
+                    f"{exc.diag.message_primary}"
+                )
+                st.stop()
 
     cards = {}
     metadata = {}
@@ -366,6 +368,9 @@ except psycopg.Error as exc:
             "level_number": int(level_number),
             "sort_order": int(sort_order),
         }
+
+    return cards, metadata
+
 
     return cards, metadata
 
