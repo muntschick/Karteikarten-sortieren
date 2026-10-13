@@ -1171,7 +1171,11 @@ def render_admin_area():
 
             st.success("Admin angemeldet")
 
-            if st.button("📊 Dashboard öffnen", use_container_width=True):
+            if st.button(
+                "📊 Dashboard öffnen",
+                use_container_width=True,
+            ):
+                st.session_state["admin_granted"] = True
                 st.session_state["admin_dashboard_open"] = True
                 st.rerun()
 
