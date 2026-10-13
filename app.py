@@ -1013,12 +1013,19 @@ def render_admin_dashboard(rows):
             ],
             errors="ignore",
         )
+
         st.dataframe(
             card_analysis_view,
             hide_index=True,
             use_container_width=True,
-            height=full_table_height(card_analysis_view),
+            row_height=55,
+            height=48 + len(card_analysis_view) * 55,
             column_config={
+                "Text": st.column_config.TextColumn(
+                    "Text",
+                    width="large",
+                ),
+
                 "Übereinstimmung %": st.column_config.ProgressColumn(
                     "Übereinstimmung %",
                     min_value=0,
