@@ -638,7 +638,6 @@ def build_card_analysis(raw_df):
             ]
             majority = " / ".join(modal_levels)
             agreement = max_count / number_ratings * 100
-            dissent = 100 - agreement
 
             used_positions = [
                 level_positions[level]
@@ -683,7 +682,6 @@ def build_card_analysis(raw_df):
         else:
             majority = "—"
             agreement = 0.0
-            dissent = 0.0
             spread = 0
             entropy = 0.0
             reference_match = 0.0
@@ -710,8 +708,12 @@ def build_card_analysis(raw_df):
                     "Ja" if majority_matches_reference else "Nein"
                 ),
                 "Übereinstimmung %": round(agreement, 1),
-                "Dissens %": round(dissent, 1),
                 "Referenz-Treffer %": round(reference_match, 1),
+                "Konsens–Referenz-Differenz": (
+                    round(agreement - reference_match, 1)
+                    if number_ratings > 0
+                    else None
+                ),
                 "Ø Abweichung zur Referenz": round(mean_abs_deviation, 2),
                 "Spannweite": spread,
                 "Entropie %": round(entropy, 1),
@@ -971,7 +973,13 @@ def render_admin_dashboard(rows):
         st.caption(
             "Übereinstimmung = Anteil der häufigsten Einstufung. "
             "Referenz-Treffer = Anteil der Teilnehmenden, die genau das "
-            "hinterlegte Referenzniveau wählen. Ø Abweichung misst den "
+            "hinterlegte Referenzniveau wählen. "
+            "Die Konsens–Referenz-Differenz zeigt, um wie viele "
+            "Prozentpunkte der Anteil der häufigsten Einstufung "
+            "über dem Anteil der Referenzeinstufungen liegt. "
+            "Ein höherer Wert weist auf eine stärkere "
+            "Abweichung des Konsenses von der Referenz hin. "
+            "Ø Abweichung misst den "
             "mittleren ordinalen Abstand zum Referenzniveau (0 = identisch, "
             "1 = eine Stufe, usw.)."
         )
@@ -1023,10 +1031,18 @@ def render_admin_dashboard(rows):
                     max_value=100,
                     format="%.1f %%",
                 ),
-                "Dissens %": st.column_config.NumberColumn(
-                    "Dissens %",
-                    format="%.1f %%",
+
+                "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
+                    "Konsens–Referenz-Differenz",
+                    format="%.1f",
+                    help=(
+                        "Unterschied zwischen dem Anteil der "
+                        "häufigsten Einstufung und dem Anteil "
+                        "der referenzkonformen Einstufungen, "
+                        "in Prozentpunkten."
+                    ),
                 ),
+                
                 "Entropie %": st.column_config.NumberColumn(
                     "Entropie %",
                     format="%.1f %%",
@@ -1112,8 +1128,8 @@ def render_admin_dashboard(rows):
                     "Bewertungen",
                     "Mehrheit",
                     "Übereinstimmung %",
-                    "Dissens %",
                     "Referenz-Treffer %",
+                    "Konsens–Referenz-Differenz",
                     "Ø Abweichung zur Referenz",
                     "Spannweite",
                     "Entropie %",
@@ -1137,9 +1153,9 @@ def render_admin_dashboard(rows):
                         max_value=100,
                         format="%.1f %%",
                     ),
-                    "Dissens %": st.column_config.NumberColumn(
-                        "Dissens %",
-                        format="%.1f %%",
+                    "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
+                        "Konsens–Referenz-Differenz",
+                        format="%.1f",
                     ),
                     "Entropie %": st.column_config.NumberColumn(
                         "Entropie %",
