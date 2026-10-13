@@ -1196,6 +1196,9 @@ def render_admin_area():
         print("Fehler beim Laden der Admin-Daten:", repr(exc))
         st.error("Die Ergebnisse konnten nicht geladen werden.")
         st.stop()
+        
+    render_admin_dashboard(rows)
+    st.stop()
 
 def build_rater_analysis(raw_df):
     """
@@ -1299,8 +1302,6 @@ def build_rater_analysis(raw_df):
         .reset_index(drop=True)
     )
 
-    render_admin_dashboard(rows)
-    st.stop()
 
 
 # -------------------------------------------------------------------
