@@ -1424,7 +1424,8 @@ def build_rater_analysis(raw_df):
             ["card_id", "participant_level"]
         )["card_id"]
         .transform("size")
-
+    )
+    
     # Eigene Bewertung aus dem Vergleich entfernen
     df["peer_uebereinstimmung"] = (
         (df["gleiche_bewertungen"] - 1)
