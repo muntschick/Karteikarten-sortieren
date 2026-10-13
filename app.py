@@ -1424,13 +1424,10 @@ def build_rater_analysis(raw_df):
             ["card_id", "participant_level"]
         )["card_id"]
         .transform("size")
-    )
 
     # Eigene Bewertung aus dem Vergleich entfernen
     df["peer_uebereinstimmung"] = (
-        (
-            df["gleiche_bewertungen"] - 1
-        )
+        (df["gleiche_bewertungen"] - 1)
         / (
             df["anzahl_pro_karte"] - 1
         ).replace(0, float("nan"))
@@ -1460,17 +1457,17 @@ def build_rater_analysis(raw_df):
                 "Zu niedrig": ("zu_niedrig", "sum"),
                 "Starke Abweichungen": (
                     "starke_abweichung", "sum"
+                ),
                 "Peer-Übereinstimmung %": (
                     "peer_uebereinstimmung", "mean"
                 ),
                 "Peer-Vergleiche (Karten)": (
-                   "peer_vergleichbar", "sum"
-                ),
-                
+                    "peer_vergleichbar", "sum"
                 ),
             },
         )
     )
+
 
     result["Referenz-Treffer %"] = (
         100 * result["Treffer"] / result["Karten"]
