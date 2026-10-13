@@ -223,8 +223,10 @@ def init_db():
                 """
                 CREATE TABLE IF NOT EXISTS public.submissions (
                     submission_id UUID PRIMARY KEY,
-                    participant_id TEXT NOT NULL UNIQUE,
-                    submitted_at_utc TIMESTAMPTZ NOT NULL
+                    participant_id TEXT NOT NULL,
+                    submitted_at_utc TIMESTAMPTZ NOT NULL,
+                    proficiency TEXT NOT NULL DEFAULT 'Lesen',
+                    UNIQUE (participant_id, proficiency)
                 )
                 """
             )
@@ -279,7 +281,9 @@ def init_db():
                     item_category TEXT NOT NULL,
                     category_number SMALLINT NOT NULL,
                     level_number SMALLINT NOT NULL,
-                    sort_order SMALLINT NOT NULL UNIQUE
+                    sort_order SMALLINT NOT NULL,
+                    proficiency TEXT NOT NULL DEFAULT 'Lesen',
+                    UNIQUE (proficiency, sort_order)
                 )
                 """
             )
@@ -460,7 +464,8 @@ def load_results():
                     c.item_category,
                     c.category_number,
                     c.level_number,
-                    c.sort_order
+                    c.sort_order,
+                    s.proficiency
                 FROM public.submissions AS s
                 JOIN public.assignments AS a
                     ON a.submission_id = s.submission_id
