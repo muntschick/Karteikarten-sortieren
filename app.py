@@ -320,23 +320,23 @@ def load_cards(proficiency):
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-        try:
-            cur.execute(
-                """
-                SELECT
-                    card_id,
-                    card_text,
-                    reference_level,
-                    item_category,
-                    category_number,
-                    level_number,
-                    sort_order
-                FROM public.cards
-                WHERE proficiency = %s
-                ORDER BY sort_order
-                """,
-                (str(proficiency),)
-            )
+    try:
+        cur.execute(
+            """
+            SELECT
+                card_id,
+                card_text,
+                reference_level,
+                item_category,
+                category_number,
+                level_number,
+                sort_order
+            FROM public.cards
+            WHERE proficiency = %s
+            ORDER BY sort_order
+            """,
+            (str(proficiency),)
+        )
 except psycopg.Error as exc:
     st.error(
         f"Datenbankfehler (SQLSTATE {exc.sqlstate}): "
