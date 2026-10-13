@@ -18,6 +18,12 @@ import streamlit.components.v1 as components
 LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
 UNASSIGNED = "Noch nicht zugeordnet"
 
+# Kompetenz dieser App
+APP_PROFICIENCY = st.secrets.get(
+    "APP_PROFICIENCY",
+    "Lesen"
+)
+
 # Diese Variablen werden nach dem Login aus Supabase befüllt.
 # An den Browser werden für die Teilnehmeransicht nur card_id + card_text gegeben.
 CARDS = {}
@@ -302,11 +308,11 @@ def init_db():
     return True
 
 
+
 @st.cache_data(ttl=300)
-def load_cards():
+def load_cards(proficiency):
     """
-    Lädt die Stammdaten in Ihrer fachlichen sort_order.
-    Für die Teilnehmeransicht werden später nur ID + Text verwendet.
+    Lädt ausschließlich Karten der ausgewählten Kompetenz.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -321,8 +327,10 @@ def load_cards():
                     level_number,
                     sort_order
                 FROM public.cards
+                WHERE proficiency = %s
                 ORDER BY sort_order
-                """
+                """,
+                (proficiency,)
             )
             rows = cur.fetchall()
 
@@ -351,9 +359,11 @@ def load_cards():
     return cards, metadata
 
 
+
 def save_submission(participant_id, assignments):
     """
-    Speichert eine vollständige Abgabe in einer Transaktion.
+    Speichert eine vollständige Abgabe
+    einschließlich der Kompetenz.
     """
     submission_id = uuid.uuid4()
     submitted_at = datetime.now(timezone.utc)
@@ -370,19 +380,46 @@ def save_submission(participant_id, assignments):
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Sicherstellen, dass die Karten
+            # zur aktuellen App gehören.
+            card_ids = list(assignments.keys())
+
+            cur.execute(
+                """
+                SELECT card_id
+                FROM public.cards
+                WHERE proficiency = %s
+                """,
+                (APP_PROFICIENCY,)
+            )
+            valid_ids = {
+                row[0] for row in cur.fetchall()
+            }
+
+            if (
+                set(card_ids) != valid_ids
+                or len(card_ids) != len(valid_ids)
+            ):
+                raise ValueError(
+                    "Die Karten stimmen nicht mit "
+                    "der aktuellen Kompetenz überein."
+                )
+
             cur.execute(
                 """
                 INSERT INTO public.submissions (
                     submission_id,
                     participant_id,
-                    submitted_at_utc
+                    submitted_at_utc,
+                    proficiency
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 """,
                 (
                     submission_id,
                     participant_id,
                     submitted_at,
+                    APP_PROFICIENCY,
                 ),
             )
 
@@ -403,8 +440,8 @@ def save_submission(participant_id, assignments):
 
 def load_results():
     """
-    Lädt die Auswertungsdaten bereits mit den Karten-Stammdaten zusammengeführt.
-    Nur Karten, die aktuell in public.cards vorhanden sind, werden ausgewertet.
+    Lädt ausschließlich Ergebnisse der
+    aktuellen Kompetenz.
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -426,11 +463,18 @@ def load_results():
                     ON a.submission_id = s.submission_id
                 JOIN public.cards AS c
                     ON c.card_id = a.card_id
+                WHERE
+                    s.proficiency = %s
+                    AND c.proficiency = %s
                 ORDER BY
                     s.submitted_at_utc,
                     s.participant_id,
                     c.sort_order
-                """
+                """,
+                (
+                    APP_PROFICIENCY,
+                    APP_PROFICIENCY,
+                )
             )
             return cur.fetchall()
 
@@ -1980,7 +2024,7 @@ require_access_code()
 init_db()
 
 # Kartenstammdaten aus Supabase laden.
-CARDS, CARD_METADATA = load_cards()
+CARDS, CARD_METADATA = load_cards(APP_PROFICIENCY)
 
 if not CARDS:
     st.error(
@@ -2149,6 +2193,8 @@ if submit:
                     "Diese Teilnehmer-ID wurde bereits verwendet. "
                     "Bitte prüfen Sie die ID oder verwenden Sie eine andere."
                 )
+            except ValueError as exc:
+                st.error(str(exc))
             except psycopg.Error as exc:
                 print("PostgreSQL-Datenbankfehler:", repr(exc))
                 st.error(
