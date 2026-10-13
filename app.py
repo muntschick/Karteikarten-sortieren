@@ -763,6 +763,83 @@ def build_group_summary(card_analysis_df, group_column, order_column=None):
     return grouped
 
 
+def build_rater_level_analysis(raw_df, participant_id):
+    """
+    Trefferquote einer Person getrennt
+    nach Referenzniveau.
+    """
+    df = raw_df[
+        raw_df["participant_id"] == participant_id
+    ].copy()
+
+    columns = [
+        "Referenzniveau",
+        "Karten",
+        "Treffer",
+        "Abweichungen",
+        "Trefferquote %",
+        "Ø Abweichung",
+    ]
+
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+
+    level_positions = {
+        level: index
+        for index, level in enumerate(LEVELS)
+    }
+
+    df["abweichung"] = (
+        df["participant_level"].map(level_positions)
+        - df["reference_level"].map(level_positions)
+    )
+
+    df["treffer"] = df["abweichung"] == 0
+    df["absolute_abweichung"] = df["abweichung"].abs()
+
+    result = (
+        df.groupby("reference_level", as_index=False)
+        .agg(
+            Karten=("card_id", "nunique"),
+            Treffer=("treffer", "sum"),
+            **{
+                "Ø Abweichung": (
+                    "absolute_abweichung", "mean"
+                ),
+            },
+        )
+    )
+
+    result["Abweichungen"] = (
+        result["Karten"] - result["Treffer"]
+    )
+
+    result["Trefferquote %"] = (
+        result["Treffer"]
+        / result["Karten"]
+        * 100
+    ).round(1)
+
+    result["Ø Abweichung"] = (
+        result["Ø Abweichung"].round(2)
+    )
+
+    result = result.rename(
+        columns={
+            "reference_level": "Referenzniveau"
+        }
+    )
+
+    result["Referenzniveau"] = pd.Categorical(
+        result["Referenzniveau"],
+        categories=LEVELS,
+        ordered=True,
+    )
+
+    result = result.sort_values("Referenzniveau")
+
+    return result[columns].reset_index(drop=True)
+
 def render_admin_dashboard(rows):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
@@ -1107,6 +1184,14 @@ def render_admin_dashboard(rows):
                             max_value=100,
                             format="%.1f %%",
                         ),
+
+                    "Peer-Übereinstimmung %":
+                        st.column_config.ProgressColumn(
+                            "Peer-Übereinstimmung %",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f %%",
+                        ),
                 },
             )
 
@@ -1134,6 +1219,82 @@ def render_admin_dashboard(rows):
             "Starke Abweichungen: mindestens zwei "
             "Niveaustufen Abstand."
         )
+
+        st.divider()
+        st.subheader("Detailanalyse nach Referenzniveau")
+
+        if not rater_analysis_df.empty:
+            participant_ids = sorted(
+                raw_df["participant_id"]
+                .dropna()
+                .unique()
+                .tolist()
+            )
+
+            selected_participant = st.selectbox(
+                "Bewerter:in auswählen",
+                options=participant_ids,
+                key="selected_rater",
+            )
+
+            level_analysis_df = (
+                build_rater_level_analysis(
+                    raw_df,
+                    selected_participant,
+                )
+            )
+
+            st.write(
+                f"**Trefferquoten nach Referenzniveau "
+                f"für {selected_participant}**"
+            )
+
+            st.dataframe(
+                level_analysis_df,
+                hide_index=True,
+                use_container_width=True,
+                height=full_table_height(
+                    level_analysis_df
+                ),
+                column_config={
+                    "Trefferquote %":
+                        st.column_config.ProgressColumn(
+                            "Trefferquote %",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f %%",
+                        ),
+                },
+            )
+
+            chart_df = (
+                level_analysis_df[
+                    ["Referenzniveau", "Trefferquote %"]
+                ]
+                .set_index("Referenzniveau")
+            )
+
+            st.bar_chart(
+                chart_df,
+                y="Trefferquote %",
+                y_label="Trefferquote in %",
+                x_label="Referenzniveau",
+            )
+
+            st.download_button(
+                "📥 Niveauanalyse als CSV",
+                data=(
+                    level_analysis_df
+                    .to_csv(index=False)
+                    .encode("utf-8-sig")
+                ),
+                file_name=(
+                    f"niveauanalyse_"
+                    f"{selected_participant}_"
+                    f"{APP_PROFICIENCY}.csv"
+                ),
+                mime="text/csv",
+            )
 
 
 def render_admin_area():
@@ -1210,6 +1371,8 @@ def build_rater_analysis(raw_df):
         "Teilnehmer-ID",
         "Karten",
         "Referenz-Treffer %",
+        "Peer-Übereinstimmung %",
+        "Peer-Vergleiche (Karten)",
         "Abweichungen",
         "Abweichungen %",
         "Ø Abweichung",
@@ -1249,6 +1412,35 @@ def build_rater_analysis(raw_df):
         df["absolute_abweichung"] >= 2
     )
 
+    # Anzahl aller Bewertungen pro Karte
+    df["anzahl_pro_karte"] = (
+        df.groupby("card_id")["card_id"]
+        .transform("size")
+    )
+
+    # Anzahl identischer Einstufungen pro Karte
+    df["gleiche_bewertungen"] = (
+        df.groupby(
+            ["card_id", "participant_level"]
+        )["card_id"]
+        .transform("size")
+    )
+
+    # Eigene Bewertung aus dem Vergleich entfernen
+    df["peer_uebereinstimmung"] = (
+        (
+            df["gleiche_bewertungen"] - 1
+        )
+        / (
+            df["anzahl_pro_karte"] - 1
+        ).replace(0, float("nan"))
+    )
+
+    # Karten mit mindestens einer weiteren Bewertung
+    df["peer_vergleichbar"] = (
+        df["anzahl_pro_karte"] > 1
+    )
+
     result = (
         df.groupby(
             ["participant_id", "submitted_at_utc"],
@@ -1268,6 +1460,13 @@ def build_rater_analysis(raw_df):
                 "Zu niedrig": ("zu_niedrig", "sum"),
                 "Starke Abweichungen": (
                     "starke_abweichung", "sum"
+                "Peer-Übereinstimmung %": (
+                    "peer_uebereinstimmung", "mean"
+                ),
+                "Peer-Vergleiche (Karten)": (
+                   "peer_vergleichbar", "sum"
+                ),
+                
                 ),
             },
         )
@@ -1285,6 +1484,14 @@ def build_rater_analysis(raw_df):
         100 * result["Abweichungen"] / result["Karten"]
     ).round(1)
 
+    result["Peer-Übereinstimmung %"] = (
+        result["Peer-Übereinstimmung %"] * 100
+    ).round(1)
+
+    result["Peer-Vergleiche (Karten)"] = (
+        result["Peer-Vergleiche (Karten)"].astype(int)
+    )
+    
     result["Ø Abweichung"] = (
         result["Ø Abweichung"].round(2)
     )
