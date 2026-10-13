@@ -6,6 +6,7 @@ import random
 import tempfile
 import uuid
 import hmac
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1014,12 +1015,27 @@ def render_admin_dashboard(rows):
             errors="ignore",
         )
 
+        card_analysis_view = card_analysis_view.copy()
+        
+        card_analysis_view["Text"] = (
+            card_analysis_view["Text"]
+            .apply(
+                lambda text: "\n".join(
+                    textwrap.wrap(
+                        str(text),
+                        width=45,
+                        break_long_words=False,
+                    )
+                )
+            )
+        )
+
         st.dataframe(
             card_analysis_view,
             hide_index=True,
             use_container_width=True,
-            row_height=55,
-            height=48 + len(card_analysis_view) * 55,
+            row_height=70,
+            height=48 + len(card_analysis_view) * 70,
             column_config={
                 "Text": st.column_config.TextColumn(
                     "Text",
