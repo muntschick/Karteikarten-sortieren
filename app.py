@@ -313,7 +313,6 @@ def init_db():
 
 
 
-
 @st.cache_data(ttl=300)
 def load_cards(proficiency):
     """
@@ -321,31 +320,23 @@ def load_cards(proficiency):
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                    SELECT
-                        card_id,
-                        card_text,
-                        reference_level,
-                        item_category,
-                        category_number,
-                        level_number,
-                        sort_order
-                    FROM public.cards
-                    WHERE proficiency = %s
-                    ORDER BY sort_order
-                    """,
-                    (proficiency,)
-                )
-                rows = cur.fetchall()
-
-            except psycopg.Error as exc:
-                st.error(
-                    f"Datenbankfehler (SQLSTATE {exc.sqlstate}): "
-                    f"{exc.diag.message_primary}"
-                )
-                st.stop()
+            cur.execute(
+                """
+                SELECT
+                    card_id,
+                    card_text,
+                    reference_level,
+                    item_category,
+                    category_number,
+                    level_number,
+                    sort_order
+                FROM public.cards
+                WHERE proficiency = %s
+                ORDER BY sort_order
+                """,
+                (proficiency,)
+            )
+            rows = cur.fetchall()
 
     cards = {}
     metadata = {}
@@ -370,10 +361,6 @@ def load_cards(proficiency):
         }
 
     return cards, metadata
-
-
-    return cards, metadata
-
 
 
 def save_submission(participant_id, assignments):
