@@ -325,9 +325,12 @@ def load_cards(proficiency):
                     item_category,
                     category_number,
                     level_number,
-                    sort_order
+                    sort_order,
+                    s.proficiency
                 FROM public.cards
-                WHERE proficiency = %s
+                WHERE
+                    s.proficiency = %s
+                    AND c.proficiency = %s
                 ORDER BY sort_order
                 """,
                 (proficiency,)
@@ -498,6 +501,7 @@ def create_results_csv(rows):
             "category_number",
             "level_number",
             "sort_order",
+            "proficiency",
         ]
     )
 
@@ -524,6 +528,7 @@ def results_to_dataframe(rows):
             "category_number",
             "level_number",
             "sort_order",
+            "proficiency",
         ],
     )
 
