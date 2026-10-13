@@ -320,6 +320,7 @@ def load_cards(proficiency):
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
+        try:
             cur.execute(
                 """
                 SELECT
@@ -329,17 +330,20 @@ def load_cards(proficiency):
                     item_category,
                     category_number,
                     level_number,
-                    sort_order,
-                    s.proficiency
+                    sort_order
                 FROM public.cards
-                WHERE
-                    s.proficiency = %s
-                    AND c.proficiency = %s
+                WHERE proficiency = %s
                 ORDER BY sort_order
                 """,
-                (proficiency,)
+                (str(proficiency),)
             )
-            rows = cur.fetchall()
+except psycopg.Error as exc:
+    st.error(
+        f"Datenbankfehler (SQLSTATE {exc.sqlstate}): "
+        f"{exc.diag.message_primary}"
+    )
+    st.stop()
+
 
     cards = {}
     metadata = {}
