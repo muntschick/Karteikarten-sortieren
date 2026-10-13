@@ -767,6 +767,7 @@ def render_admin_dashboard(rows):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
     card_analysis_df = build_card_analysis(raw_df)
+    rater_analysis_df = build_rater_analysis(raw_df)
 
     number_submissions = len(submissions_df)
     number_assignments = len(raw_df)
@@ -807,6 +808,7 @@ def render_admin_dashboard(rows):
         tab_cards,
         tab_consensus,
         tab_dissent,
+        tab_raters,
     ) = st.tabs(
         [
             "📌 Überblick",
@@ -814,6 +816,7 @@ def render_admin_dashboard(rows):
             "🗂️ Kartenanalyse",
             "✅ TOP Konsens",
             "⚠️ Problemfälle",
+            "👥 Bewerter:innen",
         ]
     )
 
@@ -916,11 +919,20 @@ def render_admin_dashboard(rows):
             "Die Tabelle ist in Ihrer hinterlegten sort_order sortiert. "
             "Diese Reihenfolge wird den Teilnehmenden nicht gezeigt."
         )
+        card_analysis_view = card_analysis_df.drop(
+            columns=[
+                "Kategorie-Nr",
+                "Level-Nr",
+                "Mehrheit",
+                "Mehrheit = Referenz",
+            ],
+            errors="ignore",
+        )
         st.dataframe(
-            card_analysis_df,
+            card_analysis_view,
             hide_index=True,
             use_container_width=True,
-            height=full_table_height(card_analysis_df),
+            height=full_table_height(card_analysis_view),
             column_config={
                 "Übereinstimmung %": st.column_config.ProgressColumn(
                     "Übereinstimmung %",
@@ -1059,6 +1071,70 @@ def render_admin_dashboard(rows):
                 },
             )
 
+    # 6. Bewerter:innen
+    with tab_raters:
+        st.subheader("Auswertung nach Bewerter:innen")
+
+        st.caption(
+            f"Einzelne Abgaben für die Kompetenz "
+            f"{APP_PROFICIENCY}. "
+            "Referenz-Treffer = exakte Übereinstimmung "
+            "mit dem hinterlegten Referenzniveau."
+        )
+
+        if rater_analysis_df.empty:
+            st.info("Noch keine Abgaben vorhanden.")
+        else:
+            st.dataframe(
+                rater_analysis_df,
+                hide_index=True,
+                use_container_width=True,
+                height=full_table_height(
+                    rater_analysis_df
+                ),
+                column_config={
+                    "Referenz-Treffer %":
+                        st.column_config.ProgressColumn(
+                            "Referenz-Treffer %",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f %%",
+                        ),
+                    "Abweichungen %":
+                        st.column_config.ProgressColumn(
+                            "Abweichungen %",
+                            min_value=0,
+                            max_value=100,
+                            format="%.1f %%",
+                        ),
+                },
+            )
+
+            csv_data = (
+                rater_analysis_df
+                .to_csv(index=False)
+                .encode("utf-8-sig")
+            )
+
+            st.download_button(
+                "📥 Bewerter:innen als CSV",
+                data=csv_data,
+                file_name=(
+                    f"bewerter_{APP_PROFICIENCY}.csv"
+                ),
+                mime="text/csv",
+            )
+
+        st.caption(
+            "Ø Abweichung: mittlerer absoluter "
+            "Abstand zum Referenzniveau. "
+            "Ø gerichtete Abweichung: positive Werte "
+            "zeigen eine Tendenz zu höheren, negative "
+            "Werte zu niedrigeren Einstufungen. "
+            "Starke Abweichungen: mindestens zwei "
+            "Niveaustufen Abstand."
+        )
+
 
 def render_admin_area():
     with st.sidebar:
@@ -1116,6 +1192,108 @@ def render_admin_area():
         print("Fehler beim Laden der Admin-Daten:", repr(exc))
         st.error("Die Ergebnisse konnten nicht geladen werden.")
         st.stop()
+
+def build_rater_analysis(raw_df):
+    """
+    Erstellt eine Auswertung pro Abgabe.
+    Eine Stufe Abstand entspricht einer Position
+    in LEVELS, z. B. A1 -> A2.
+    """
+    columns = [
+        "Teilnehmer-ID",
+        "Karten",
+        "Referenz-Treffer %",
+        "Abweichungen",
+        "Abweichungen %",
+        "Ø Abweichung",
+        "Ø gerichtete Abweichung",
+        "Zu hoch",
+        "Zu niedrig",
+        "Starke Abweichungen",
+    ]
+
+    if raw_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    level_positions = {
+        level: index
+        for index, level in enumerate(LEVELS)
+    }
+
+    df = raw_df.copy()
+
+    df["bewertungs_position"] = (
+        df["participant_level"].map(level_positions)
+    )
+    df["referenz_position"] = (
+        df["reference_level"].map(level_positions)
+    )
+
+    df["abweichung"] = (
+        df["bewertungs_position"]
+        - df["referenz_position"]
+    )
+
+    df["absolute_abweichung"] = df["abweichung"].abs()
+    df["treffer"] = df["abweichung"] == 0
+    df["zu_hoch"] = df["abweichung"] > 0
+    df["zu_niedrig"] = df["abweichung"] < 0
+    df["starke_abweichung"] = (
+        df["absolute_abweichung"] >= 2
+    )
+
+    result = (
+        df.groupby(
+            ["participant_id", "submitted_at_utc"],
+            as_index=False,
+        )
+        .agg(
+            Karten=("card_id", "nunique"),
+            Treffer=("treffer", "sum"),
+            **{
+                "Ø Abweichung": (
+                    "absolute_abweichung", "mean"
+                ),
+                "Ø gerichtete Abweichung": (
+                    "abweichung", "mean"
+                ),
+                "Zu hoch": ("zu_hoch", "sum"),
+                "Zu niedrig": ("zu_niedrig", "sum"),
+                "Starke Abweichungen": (
+                    "starke_abweichung", "sum"
+                ),
+            },
+        )
+    )
+
+    result["Referenz-Treffer %"] = (
+        100 * result["Treffer"] / result["Karten"]
+    ).round(1)
+
+    result["Abweichungen"] = (
+        result["Karten"] - result["Treffer"]
+    )
+
+    result["Abweichungen %"] = (
+        100 * result["Abweichungen"] / result["Karten"]
+    ).round(1)
+
+    result["Ø Abweichung"] = (
+        result["Ø Abweichung"].round(2)
+    )
+    result["Ø gerichtete Abweichung"] = (
+        result["Ø gerichtete Abweichung"].round(2)
+    )
+
+    result = result.rename(
+        columns={"participant_id": "Teilnehmer-ID"}
+    )
+
+    return (
+        result[columns]
+        .sort_values("Teilnehmer-ID")
+        .reset_index(drop=True)
+    )
 
     render_admin_dashboard(rows)
     st.stop()
@@ -1970,6 +2148,7 @@ st.set_page_config(
     page_title="Karteikarten-Zuordnung",
     page_icon="🗂️",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 # Möglichst viel Bildschirmbreite verwenden.
