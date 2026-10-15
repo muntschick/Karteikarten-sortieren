@@ -701,6 +701,16 @@ def build_card_analysis(raw_df):
             mean_abs_deviation = 0.0
             majority_matches_reference = False
 
+        pair_count = number_ratings * (number_ratings - 1) / 2
+        pair_distance = (
+            sum(
+                counts[LEVELS[i]] * counts[LEVELS[j]] * abs(j - i)
+                for i in range(len(LEVELS))
+                for j in range(i + 1, len(LEVELS))
+            ) / pair_count
+            if pair_count else None
+        )
+
         confidence_counts = card_rows["confidence"].value_counts(dropna=False)
         secure_count = int((card_rows["confidence"] == True).sum())
         unsure_count = int((card_rows["confidence"] == False).sum())
@@ -720,19 +730,20 @@ def build_card_analysis(raw_df):
                 "A2": counts["A2"],
                 "B1": counts["B1"],
                 "B2": counts["B2"],
-                "Mehrheit": majority,
+                "Modalniveau": majority,
                 "Mehrheit = Referenz": (
                     "Ja" if majority_matches_reference else "Nein"
                 ),
-                "Übereinstimmung %": round(agreement, 1),
-                "Referenz-Treffer %": round(reference_match, 1),
+                "Anteil Modalniveau %": round(agreement, 1),
+                "Referenzübereinstimmung %": round(reference_match, 1),
                 "Konsens–Referenz-Differenz": (
                     round(agreement - reference_match, 1)
                     if number_ratings > 0
                     else None
                 ),
                 "Ø Abweichung zur Referenz": round(mean_abs_deviation, 2),
-                "Spannweite": spread,
+                "Spannweite (Stufen)": spread,
+                "Ø paarweiser Niveauabstand": round(pair_distance, 2) if pair_distance is not None else None,
                 "Entropie %": round(entropy, 1),
                 "Sicher (!)": secure_count,
                 "Unsicher (?)": unsure_count,
@@ -871,6 +882,92 @@ def build_confidence_level_analysis(raw_df):
     return pd.DataFrame(rows, columns=columns)
 
 
+def build_reliability_analysis(raw_df):
+    """Krippendorffs ordinales Alpha und Fleiss-Kappa über die vollständige Erhebung.
+
+    Alpha verwendet die ordinale Distanz gemäß Krippendorff aus den
+    gepoolten Kategoriehäufigkeiten und eine Coincidence-Matrix.
+    Fleiss-Kappa setzt gleich viele Ratings pro Karte voraus.
+    """
+    data = raw_df.dropna(subset=["participant_level", "card_id"])
+    rating_groups = [g["participant_level"].tolist() for _, g in data.groupby("card_id")]
+    rating_groups = [g for g in rating_groups if len(g) >= 2]
+    if not rating_groups:
+        return pd.DataFrame([{"Kennzahl": "Krippendorffs α (ordinal)", "Wert": None},
+                             {"Kennzahl": "Fleiss-κ (nominal)", "Wert": None}])
+
+    n_categories = len(LEVELS)
+    index = {level: i for i, level in enumerate(LEVELS)}
+    counts_by_card = []
+    for group in rating_groups:
+        counts = [0] * n_categories
+        for level in group:
+            counts[index[level]] += 1
+        counts_by_card.append(counts)
+
+    # Alpha: coincidence count o_ij = sum_units count_i*(count_j-[i=j])/(n_unit-1)
+    coincidence = [[0.0] * n_categories for _ in LEVELS]
+    for counts in counts_by_card:
+        m = sum(counts)
+        for i in range(n_categories):
+            for j in range(n_categories):
+                coincidence[i][j] += counts[i] * (counts[j] - (i == j)) / (m - 1)
+    marginals = [sum(row) for row in coincidence]
+    total = sum(marginals)
+    distances = [[0.0] * n_categories for _ in LEVELS]
+    for i in range(n_categories):
+        for j in range(n_categories):
+            if i != j:
+                lo, hi = sorted((i, j))
+                distances[i][j] = (sum(marginals[lo:hi+1]) - (marginals[lo] + marginals[hi]) / 2) ** 2
+    observed = sum(coincidence[i][j] * distances[i][j]
+                   for i in range(n_categories) for j in range(n_categories)) / total
+    expected = (sum(marginals[i] * marginals[j] * distances[i][j]
+                    for i in range(n_categories) for j in range(n_categories)) /
+                (total * (total - 1))) if total > 1 else 0
+    alpha = 1 - observed / expected if expected > 0 else None
+
+    # Fleiss: only meaningful for the same count per item
+    lengths = {sum(row) for row in counts_by_card}
+    fleiss = None
+    if len(lengths) == 1:
+        n = next(iter(lengths))
+        n_items = len(counts_by_card)
+        p_bar = sum((sum(v * (v - 1) for v in counts) / (n * (n - 1)))
+                    for counts in counts_by_card) / n_items
+        p = [sum(counts[i] for counts in counts_by_card) / (n_items * n)
+             for i in range(n_categories)]
+        p_expected = sum(x * x for x in p)
+        if p_expected < 1:
+            fleiss = (p_bar - p_expected) / (1 - p_expected)
+
+    return pd.DataFrame([
+        {"Kennzahl": "Krippendorffs α (ordinal)", "Wert": round(alpha, 3) if alpha is not None else None},
+        {"Kennzahl": "Fleiss-κ (nominal)", "Wert": round(fleiss, 3) if fleiss is not None else None},
+    ])
+
+
+def build_spearman_matrix(raw_df):
+    """Paarweise Rangkorrelation über gemeinsame Karten; konstante Reihen undefiniert."""
+    if raw_df.empty:
+        return pd.DataFrame()
+    order = {level: i for i, level in enumerate(LEVELS)}
+    pivot = raw_df.assign(level_index=raw_df["participant_level"].map(order)).pivot_table(
+        index="card_id", columns="participant_id", values="level_index", aggfunc="first"
+    )
+    return pivot.corr(method="spearman", min_periods=3).round(3)
+
+
+def build_reference_summary(raw_df):
+    if raw_df.empty:
+        return {"Referenzübereinstimmung %": None, "Ø Referenzabweichung (Stufen)": None}
+    order = {level: i for i, level in enumerate(LEVELS)}
+    correct = raw_df["participant_level"].eq(raw_df["reference_level"])
+    distance = (raw_df["participant_level"].map(order) - raw_df["reference_level"].map(order)).abs()
+    return {"Referenzübereinstimmung %": round(100 * correct.mean(), 1),
+            "Ø Referenzabweichung (Stufen)": round(distance.mean(), 2)}
+
+
 def render_admin_dashboard(rows):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
@@ -878,6 +975,9 @@ def render_admin_dashboard(rows):
     rater_analysis_df = build_rater_analysis(raw_df)
     confidence_accuracy_df = build_confidence_accuracy_analysis(raw_df)
     confidence_level_df = build_confidence_level_analysis(raw_df)
+    reliability_df = build_reliability_analysis(raw_df)
+    spearman_df = build_spearman_matrix(raw_df)
+    reference_summary = build_reference_summary(raw_df)
 
     number_submissions = len(submissions_df)
     number_assignments = len(raw_df)
@@ -891,8 +991,7 @@ def render_admin_dashboard(rows):
     top_left, top_right = st.columns([3, 1])
     with top_left:
         st.caption(
-            "Live-Auswertung aus Supabase/PostgreSQL. "
-            "Die Teilnehmeransicht erhält die versteckten Stammdaten nicht."
+            "Live-Auswertung aus Supabase/PostgreSQL."
         )
     with top_right:
         if st.button("← Zur Umfrage", use_container_width=True):
@@ -903,6 +1002,7 @@ def render_admin_dashboard(rows):
         tab_overview,
         tab_submissions,
         tab_cards,
+        tab_reliability,
         tab_confidence,
         tab_raters,
     ) = st.tabs(
@@ -910,6 +1010,7 @@ def render_admin_dashboard(rows):
             "📌 Überblick",
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
+            "📐 Reliabilität",
             "❗ Sicherheitsanalyse",
             "👥 Bewerter:innen",
         ]
@@ -923,6 +1024,13 @@ def render_admin_dashboard(rows):
 
         st.write(f"**Letzte Abgabe:** {last_submission}")
         st.write(f"**Aktive Karten in der Erhebung:** {len(CARDS)}")
+        if number_assignments:
+            x, y = st.columns(2)
+            x.metric("Referenzübereinstimmung", f"{reference_summary['Referenzübereinstimmung %']:.1f} %")
+            y.metric("Ø Referenzabweichung", f"{reference_summary['Ø Referenzabweichung (Stufen)']:.2f} Stufen")
+        st.caption("Referenzübereinstimmung: Anteil der Zuordnungen, die exakt dem hinterlegten Referenzniveau entsprechen. "
+                   "Ø Referenzabweichung: durchschnittlicher absoluter Abstand zwischen vergebenem und Referenzniveau; "
+                   "eine Stufe entspricht einem Schritt in Pre-A1 → A1 → A2 → B1 → B2.")
 
         st.divider()
         st.subheader("Downloads")
@@ -994,19 +1102,25 @@ def render_admin_dashboard(rows):
                 use_container_width=True,
             )
 
+        st.markdown("**Reliabilität**")
+        a, b = st.columns(2)
+        with a:
+            st.download_button("📥 Reliabilitätskennzahlen als CSV",
+                               data=reliability_df.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="reliabilitaet.csv", mime="text/csv", use_container_width=True)
+        with b:
+            st.download_button("📥 Spearman-Matrix als CSV",
+                               data=spearman_df.to_csv(index=True).encode("utf-8-sig"),
+                               file_name="spearman_matrix.csv", mime="text/csv", use_container_width=True)
+
         st.caption(
-            "Übereinstimmung = Anteil der häufigsten Einstufung. "
-            "Referenz-Treffer = Anteil der Teilnehmenden, die genau das "
-            "hinterlegte Referenzniveau wählen. "
-            "Die Konsens–Referenz-Differenz zeigt, um wie viele "
-            "Prozentpunkte der Anteil der häufigsten Einstufung "
-            "über dem Anteil der Referenzeinstufungen liegt. "
-            "Ein höherer Wert weist auf eine stärkere "
-            "Abweichung des Konsenses von der Referenz hin. "
-            "Ø Abweichung misst den "
-            "mittleren ordinalen Abstand zum Referenzniveau (0 = identisch, "
-            "1 = eine Stufe, usw.)."
+            "Die Downloads enthalten Rohdaten und aggregierte Ergebnisse. "
+            "Das Modalniveau ist die häufigste Einstufung; die Referenzübereinstimmung "
+            "ist die exakte Gleichheit mit dem hinterlegten Referenzniveau."
         )
+
+        # Glossare stehen direkt unter den jeweiligen Auswertungstabellen.
+        # Alttext im Überblick entfällt.
 
     # 2. Abgaben
     with tab_submissions:
@@ -1028,11 +1142,32 @@ def render_admin_dashboard(rows):
             "Die Tabelle ist in Ihrer hinterlegten sort_order sortiert. "
             "Diese Reihenfolge wird den Teilnehmenden nicht gezeigt."
         )
-        card_analysis_view = card_analysis_df.drop(
+        sort_choice = st.selectbox(
+            "Karten sortieren nach",
+            ["Hinterlegter Reihenfolge", "Modalniveau (aufsteigend)",
+             "Modalniveau (absteigend)", "Geringstem Modalanteil",
+             "Größtem Ø paarweisen Niveauabstand"],
+            key="card_analysis_sort",
+        )
+        sorted_cards = card_analysis_df.copy()
+        if sort_choice.startswith("Modalniveau"):
+            rank = {level: i for i, level in enumerate(LEVELS)}
+            sorted_cards["_modal_sort"] = sorted_cards["Modalniveau"].map(rank)
+            sorted_cards = sorted_cards.sort_values(
+                ["_modal_sort", "Reihenfolge"],
+                ascending=[sort_choice.endswith("(aufsteigend)"), True],
+                na_position="last",
+            ).drop(columns="_modal_sort")
+        elif sort_choice == "Geringstem Modalanteil":
+            sorted_cards = sorted_cards.sort_values("Anteil Modalniveau %")
+        elif sort_choice == "Größtem Ø paarweisen Niveauabstand":
+            sorted_cards = sorted_cards.sort_values(
+                "Ø paarweiser Niveauabstand", ascending=False, na_position="last"
+            )
+        card_analysis_view = sorted_cards.drop(
             columns=[
                 "Kategorie-Nr",
                 "Level-Nr",
-                "Mehrheit",
                 "Mehrheit = Referenz",
             ],
             errors="ignore",
@@ -1043,14 +1178,14 @@ def render_admin_dashboard(rows):
             use_container_width=True,
             height=full_table_height(card_analysis_view),
             column_config={
-                "Übereinstimmung %": st.column_config.ProgressColumn(
-                    "Übereinstimmung %",
+                "Anteil Modalniveau %": st.column_config.ProgressColumn(
+                    "Anteil Modalniveau %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
                 ),
-                "Referenz-Treffer %": st.column_config.ProgressColumn(
-                    "Referenz-Treffer %",
+                "Referenzübereinstimmung %": st.column_config.ProgressColumn(
+                    "Referenzübereinstimmung %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
@@ -1073,6 +1208,43 @@ def render_admin_dashboard(rows):
                 ),
             },
         )
+
+        st.markdown("**Erläuterung der Kennzahlen**")
+        st.caption("**Modalniveau:** am häufigsten gewähltes Niveau (bei Gleichstand mehrere Niveaus). "
+                   "**Anteil Modalniveau %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; "
+                   "zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität. "
+                   "**Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen. "
+                   "**Konsens–Referenz-Differenz:** Differenz zwischen Anteil Modalniveau und Referenzübereinstimmung in Prozentpunkten. "
+                   "**Ø Abweichung zur Referenz:** mittlerer absoluter Niveauabstand zur Referenz. "
+                   "**Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe. "
+                   "**Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte "
+                   "(0 = identische Niveaus; maximal 4 Stufen). "
+                   "**Entropie %:** Verteilung der Einstufungen über die fünf Niveaus; "
+                   "höhere Werte bedeuten eine gleichmäßigere Streuung. "
+                   "**Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; "
+                   "deren Prozentwerte in der Kartenanalyse beziehen sich auf alle Bewertungen einschließlich fehlender Angaben.")
+
+    # Gesamtreliabilität
+    with tab_reliability:
+        st.subheader("Übereinstimmung zwischen den Rater:innen")
+        st.dataframe(reliability_df, hide_index=True, use_container_width=True)
+        st.caption("**Krippendorffs α (ordinal):** zufallskorrigierte Übereinstimmung für geordnete Niveaus. "
+                   "Ein höherer Wert bedeutet höhere Reliabilität; 1 steht für perfekte Übereinstimmung. "
+                   "**Fleiss-κ (nominal):** zufallskorrigierte exakte Übereinstimmung, "
+                   "ohne die Größe der Niveauabstände zu berücksichtigen. "
+                   "0 entspricht der modellbedingt erwarteten Übereinstimmung. "
+                   "Beide Kennzahlen können bei unzureichenden oder konstanten Daten undefiniert sein; "
+                   "Fleiss-κ wird nur bei gleicher Anzahl an Bewertungen pro Karte berechnet.")
+        st.divider()
+        st.subheader("Rangähnlichkeit der Rater:innen (Spearman-ρ)")
+        if spearman_df.empty or len(spearman_df.columns) < 2:
+            st.info("Für eine paarweise Rangkorrelation sind mindestens zwei Rater:innen erforderlich.")
+        else:
+            st.dataframe(spearman_df, use_container_width=True, height=full_table_height(spearman_df),)
+        st.caption("**Spearman-ρ:** paarweise Rangkorrelation der vergebenen Niveaus über dieselben Karten "
+                   "(−1 bis +1). Ein hoher Wert bedeutet ähnliche Rangordnung, "
+                   "nicht notwendigerweise dieselben Niveaus. "
+                   "Leere Felder: weniger als drei gemeinsame Karten oder konstante Bewertungen.")
 
     # Sicherheitsanalyse: Genauigkeit und Verteilung nach Referenzniveau
     with tab_confidence:
@@ -1108,6 +1280,10 @@ def render_admin_dashboard(rows):
                     y_label="Referenz-Trefferquote in %",
                 )
 
+        st.caption("**Bewertungen:** Zahl der Zuordnungen mit der jeweiligen expliziten Sicherheitsmarkierung. "
+                   "**Treffer:** davon exakt referenzgleiche Zuordnungen. "
+                   "**Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe. "
+                   "Ohne Angabe bleibt aus diesem Vergleich ausgeschlossen.")
         st.divider()
         st.subheader("Sicherheit nach Referenzniveau")
         st.caption(
@@ -1128,6 +1304,10 @@ def render_admin_dashboard(rows):
                 ),
             },
         )
+        st.caption("**Mit Angabe:** Zahl der bewusst als sicher oder unsicher markierten Einstufungen. "
+                   "**Sicher % / Unsicher %:** jeweiliger Anteil nur unter Bewertungen mit ausdrücklicher Angabe "
+                   "des betreffenden Referenzniveaus. **Ohne Angabe:** fehlende Sicherheitsmarkierung, "
+                   "nicht automatisch Unsicherheit.")
         st.caption(
             "Hinweis zu älteren Abgaben: Die Datenbank enthält für frühere "
             "Bewertungen ohne Sicherheitsfunktion ebenfalls NULL. Diese "
@@ -1182,10 +1362,12 @@ def render_admin_dashboard(rows):
                 },
             )
 
-        st.caption(
-            "Trefferquoten sicher/unsicher beziehen sich nur auf Karten mit entsprechender Angabe. "
-            "Fehlende Angaben werden separat gezählt."
-        )
+        st.caption("**Referenz-Treffer %:** Anteil exakt referenzgleicher Zuordnungen pro Person. "
+                   "**Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, "
+                   "die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung). "
+                   "**Peer-Vergleiche (Karten):** Karten, für die mindestens eine weitere Bewertung vorliegt. "
+                   "**Trefferquote sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend "
+                   "gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.")
         st.caption(
             "Ø Abweichung: mittlerer absoluter "
             "Abstand zum Referenzniveau. "
@@ -1256,6 +1438,10 @@ def render_admin_dashboard(rows):
                 y_label="Trefferquote in %",
                 x_label="Referenzniveau",
             )
+            st.caption("**Treffer:** exakt referenzgleiche Einstufungen dieser Person. "
+                       "**Abweichungen:** nicht referenzgleiche Einstufungen. "
+                       "**Trefferquote %:** Treffer geteilt durch die Zahl der Karten auf dem Referenzniveau. "
+                       "**Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau in Stufen.")
 
 
 
@@ -2479,12 +2665,42 @@ if st.session_state.submitted:
     )
     st.stop()
 
-st.caption(
-    "Ziehen Sie die Karten in die gewünschte Kategorie. "
-    "Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt."
-    "Die Nummerierung der Karten (K1-K48)"
-    " entspricht nicht der tatsächlichen Sortierung."
+
+st.markdown(
+    """
+    <div style="font-size: 0.85rem; color: gray; line-height: 1.8;">
+        Ziehen Sie die Karten in die gewünschte Niveauspalte.
+        Klicken Sie auf
+        <span style="
+            display: inline-block;
+            color: #16a34a;
+            border: 1px solid #16a34a;
+            border-radius: 4px;
+            padding: 0px 5px;
+            font-weight: bold;
+            line-height: 1.4;
+        ">!</span>,
+        wenn Sie sich bei Ihrer Einstufung sicher sind,
+        oder auf
+        <span style="
+            display: inline-block;
+            color: #dc2626;
+            border: 1px solid #dc2626;
+            border-radius: 4px;
+            padding: 0px 5px;
+            font-weight: bold;
+            line-height: 1.4;
+        ">?</span>,
+        wenn Sie sich unsicher sind.
+        <br>
+        Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt.
+        Die Nummerierung der Karten (K1–K48) entspricht nicht
+        der tatsächlichen Sortierung.
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
+
 
 component_result = card_sorter(
     st.session_state.board,
