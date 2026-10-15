@@ -864,11 +864,57 @@ def build_rater_level_analysis(raw_df, participant_id):
 
     return result[columns].reset_index(drop=True)
 
+def build_confidence_accuracy_analysis(raw_df):
+    """Referenz-Trefferquoten je Sicherheitszustand (nur explizite Antworten)."""
+    columns = ["Sicherheit", "Bewertungen", "Treffer", "Referenz-Trefferquote %"]
+    if raw_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for confidence_value, label in [(True, "Sicher (!)"), (False, "Unsicher (?)")]:
+        subset = raw_df[raw_df["confidence"].eq(confidence_value)]
+        count = len(subset)
+        hits = int((subset["participant_level"] == subset["reference_level"]).sum())
+        rows.append({
+            "Sicherheit": label,
+            "Bewertungen": count,
+            "Treffer": hits,
+            "Referenz-Trefferquote %": round(100 * hits / count, 1) if count else None,
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_confidence_level_analysis(raw_df):
+    """Sicherheitsverteilung nach Referenzniveau; Quoten unter expliziten Antworten."""
+    columns = ["Referenzniveau", "Bewertungen", "Mit Angabe", "Sicher (!)",
+               "Unsicher (?)", "Ohne Angabe", "Sicher %", "Unsicher %"]
+    rows = []
+    for level in LEVELS:
+        subset = raw_df[raw_df["reference_level"] == level]
+        total = len(subset)
+        secure = int(subset["confidence"].eq(True).sum())
+        unsure = int(subset["confidence"].eq(False).sum())
+        answered = secure + unsure
+        rows.append({
+            "Referenzniveau": level,
+            "Bewertungen": total,
+            "Mit Angabe": answered,
+            "Sicher (!)": secure,
+            "Unsicher (?)": unsure,
+            "Ohne Angabe": total - answered,
+            "Sicher %": round(100 * secure / answered, 1) if answered else None,
+            "Unsicher %": round(100 * unsure / answered, 1) if answered else None,
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
 def render_admin_dashboard(rows):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
     card_analysis_df = build_card_analysis(raw_df)
     rater_analysis_df = build_rater_analysis(raw_df)
+    confidence_accuracy_df = build_confidence_accuracy_analysis(raw_df)
+    confidence_level_df = build_confidence_level_analysis(raw_df)
 
     number_submissions = len(submissions_df)
     number_assignments = len(raw_df)
@@ -907,6 +953,7 @@ def render_admin_dashboard(rows):
         tab_overview,
         tab_submissions,
         tab_cards,
+        tab_confidence,
         tab_consensus,
         tab_dissent,
         tab_raters,
@@ -915,6 +962,7 @@ def render_admin_dashboard(rows):
             "📌 Überblick",
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
+            "❗ Sicherheitsanalyse",
             "✅ TOP Konsens",
             "⚠️ Problemfälle",
             "👥 Bewerter:innen",
@@ -1071,6 +1119,85 @@ def render_admin_dashboard(rows):
                 ),
             },
         )
+
+    # Sicherheitsanalyse: Genauigkeit und Verteilung nach Referenzniveau
+    with tab_confidence:
+        st.subheader("Sicherheit und Referenz-Trefferquote")
+        st.caption(
+            "Vergleich der exakten Übereinstimmung mit dem Referenzniveau "
+            "für ausdrücklich als sicher bzw. unsicher markierte Karten. "
+            "Bewertungen ohne Sicherheitsangabe werden hier nicht einer "
+            "der beiden Gruppen zugerechnet."
+        )
+        if raw_df.empty or not raw_df["confidence"].notna().any():
+            st.info("Noch keine Bewertungen mit Sicherheitsangabe vorhanden.")
+        else:
+            st.dataframe(
+                confidence_accuracy_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Referenz-Trefferquote %": st.column_config.ProgressColumn(
+                        "Referenz-Trefferquote %", min_value=0, max_value=100,
+                        format="%.1f %%",
+                    ),
+                },
+            )
+            chart_data = confidence_accuracy_df.dropna(
+                subset=["Referenz-Trefferquote %"]
+            ).set_index("Sicherheit")
+            if not chart_data.empty:
+                st.bar_chart(
+                    chart_data[["Referenz-Trefferquote %"]],
+                    y="Referenz-Trefferquote %",
+                    x_label="Sicherheitseinschätzung",
+                    y_label="Referenz-Trefferquote in %",
+                )
+
+        st.divider()
+        st.subheader("Sicherheit nach Referenzniveau")
+        st.caption(
+            "Die Prozentwerte für Sicher und Unsicher beziehen sich auf "
+            "Bewertungen mit ausdrücklicher Sicherheitsangabe innerhalb "
+            "des jeweiligen Referenzniveaus. Ohne Angabe wird getrennt gezeigt."
+        )
+        st.dataframe(
+            confidence_level_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Sicher %": st.column_config.ProgressColumn(
+                    "Sicher %", min_value=0, max_value=100, format="%.1f %%"
+                ),
+                "Unsicher %": st.column_config.ProgressColumn(
+                    "Unsicher %", min_value=0, max_value=100, format="%.1f %%"
+                ),
+            },
+        )
+        st.caption(
+            "Hinweis zu älteren Abgaben: Die Datenbank enthält für frühere "
+            "Bewertungen ohne Sicherheitsfunktion ebenfalls NULL. Diese "
+            "lassen sich allein anhand der confidence-Spalte nicht von "
+            "heute freiwillig ausgelassenen Angaben unterscheiden. Daher "
+            "werden sie nicht als unsicher interpretiert."
+        )
+        left_download, right_download = st.columns(2)
+        with left_download:
+            st.download_button(
+                "📥 Sicherheit und Treffergenauigkeit als CSV",
+                data=confidence_accuracy_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_treffergenauigkeit.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with right_download:
+            st.download_button(
+                "📥 Sicherheit nach Referenzniveau als CSV",
+                data=confidence_level_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_nach_referenzniveau.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
 
     # 4. TOP 10 vollständiger Konsens
     with tab_consensus:
