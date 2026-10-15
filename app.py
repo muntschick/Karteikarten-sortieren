@@ -952,6 +952,48 @@ def render_admin_dashboard(rows):
                 use_container_width=True,
             )
 
+        st.markdown("**Sicherheitsanalyse**")
+        download_3, download_4 = st.columns(2)
+        with download_3:
+            st.download_button(
+                "📥 Sicherheit und Treffergenauigkeit als CSV",
+                data=confidence_accuracy_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_treffergenauigkeit.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with download_4:
+            st.download_button(
+                "📥 Sicherheit nach Referenzniveau als CSV",
+                data=confidence_level_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_nach_referenzniveau.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.markdown("**Bewerter:innen**")
+        st.download_button(
+            "📥 Bewerter:innen als CSV",
+            data=rater_analysis_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"bewerter_{APP_PROFICIENCY}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        if not rater_analysis_df.empty:
+            export_participant = st.selectbox(
+                "Bewerter:in für den Niveauanalyse-Export auswählen",
+                options=sorted(raw_df["participant_id"].dropna().unique().tolist()),
+                key="export_rater",
+            )
+            export_level_df = build_rater_level_analysis(raw_df, export_participant)
+            st.download_button(
+                "📥 Niveauanalyse als CSV",
+                data=export_level_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"niveauanalyse_{export_participant}_{APP_PROFICIENCY}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
         st.caption(
             "Übereinstimmung = Anteil der häufigsten Einstufung. "
             "Referenz-Treffer = Anteil der Teilnehmenden, die genau das "
@@ -1093,24 +1135,6 @@ def render_admin_dashboard(rows):
             "heute freiwillig ausgelassenen Angaben unterscheiden. Daher "
             "werden sie nicht als unsicher interpretiert."
         )
-        left_download, right_download = st.columns(2)
-        with left_download:
-            st.download_button(
-                "📥 Sicherheit und Treffergenauigkeit als CSV",
-                data=confidence_accuracy_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="sicherheit_treffergenauigkeit.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with right_download:
-            st.download_button(
-                "📥 Sicherheit nach Referenzniveau als CSV",
-                data=confidence_level_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="sicherheit_nach_referenzniveau.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
     # Bewerter:innen
     with tab_raters:
         st.subheader("Auswertung nach Bewerter:innen")
@@ -1156,21 +1180,6 @@ def render_admin_dashboard(rows):
                             format="%.1f %%",
                         ),
                 },
-            )
-
-            csv_data = (
-                rater_analysis_df
-                .to_csv(index=False)
-                .encode("utf-8-sig")
-            )
-
-            st.download_button(
-                "📥 Bewerter:innen als CSV",
-                data=csv_data,
-                file_name=(
-                    f"bewerter_{APP_PROFICIENCY}.csv"
-                ),
-                mime="text/csv",
             )
 
         st.caption(
@@ -1248,20 +1257,6 @@ def render_admin_dashboard(rows):
                 x_label="Referenzniveau",
             )
 
-            st.download_button(
-                "📥 Niveauanalyse als CSV",
-                data=(
-                    level_analysis_df
-                    .to_csv(index=False)
-                    .encode("utf-8-sig")
-                ),
-                file_name=(
-                    f"niveauanalyse_"
-                    f"{selected_participant}_"
-                    f"{APP_PROFICIENCY}.csv"
-                ),
-                mime="text/csv",
-            )
 
 
 def render_admin_area():
