@@ -707,11 +707,6 @@ def build_card_analysis(raw_df):
         no_answer_count = number_ratings - secure_count - unsure_count
         result_rows.append(
             {
-                "Sicher (!)": secure_count,
-                "Unsicher (?)": unsure_count,
-                "Ohne Angabe": no_answer_count,
-                "Sicher %": round(100 * secure_count / number_ratings, 1) if number_ratings else None,
-                "Unsicher %": round(100 * unsure_count / number_ratings, 1) if number_ratings else None,
                 "Reihenfolge": meta["sort_order"],
                 "Karte": card_id,
                 "Text": meta["card_text"],
@@ -739,6 +734,11 @@ def build_card_analysis(raw_df):
                 "Ø Abweichung zur Referenz": round(mean_abs_deviation, 2),
                 "Spannweite": spread,
                 "Entropie %": round(entropy, 1),
+                "Sicher (!)": secure_count,
+                "Unsicher (?)": unsure_count,
+                "Ohne Angabe": no_answer_count,
+                "Sicher %": round(100 * secure_count / number_ratings, 1) if number_ratings else None,
+                "Unsicher %": round(100 * unsure_count / number_ratings, 1) if number_ratings else None,
             }
         )
 
