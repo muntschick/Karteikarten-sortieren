@@ -240,6 +240,7 @@ def init_db():
                     card_id TEXT NOT NULL,
                     level TEXT NOT NULL
                         CHECK (level IN ('Pre-A1', 'A1', 'A2', 'B1', 'B2')),
+                    confidence BOOLEAN,
                     PRIMARY KEY (submission_id, card_id)
                 )
                 """
@@ -270,6 +271,13 @@ def init_db():
                     RENAME COLUMN category TO level
                     """
                 )
+
+            cur.execute(
+                """
+                ALTER TABLE public.assignments
+                ADD COLUMN IF NOT EXISTS confidence BOOLEAN
+                """
+            )
 
             cur.execute(
                 """
@@ -363,7 +371,7 @@ def load_cards(proficiency):
     return cards, metadata
 
 
-def save_submission(participant_id, assignments):
+def save_submission(participant_id, assignments, confidence):
     """
     Speichert eine vollständige Abgabe
     einschließlich der Kompetenz.
@@ -376,6 +384,7 @@ def save_submission(participant_id, assignments):
             submission_id,
             card_id,
             level,
+            confidence.get(card_id),
         )
         for card_id, level
         in sorted(assignments.items())
@@ -431,9 +440,10 @@ def save_submission(participant_id, assignments):
                 INSERT INTO public.assignments (
                     submission_id,
                     card_id,
-                    level
+                    level,
+                    confidence
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 """,
                 rows,
             )
@@ -461,7 +471,8 @@ def load_results():
                     c.category_number,
                     c.level_number,
                     c.sort_order,
-                    s.proficiency
+                    s.proficiency,
+                    a.confidence
                 FROM public.submissions AS s
                 JOIN public.assignments AS a
                     ON a.submission_id = s.submission_id
@@ -503,6 +514,7 @@ def create_results_csv(rows):
             "level_number",
             "sort_order",
             "proficiency",
+            "confidence",
         ]
     )
 
@@ -530,6 +542,7 @@ def results_to_dataframe(rows):
             "level_number",
             "sort_order",
             "proficiency",
+            "confidence",
         ],
     )
 
@@ -688,6 +701,10 @@ def build_card_analysis(raw_df):
             mean_abs_deviation = 0.0
             majority_matches_reference = False
 
+        confidence_counts = card_rows["confidence"].value_counts(dropna=False)
+        secure_count = int((card_rows["confidence"] == True).sum())
+        unsure_count = int((card_rows["confidence"] == False).sum())
+        no_answer_count = number_ratings - secure_count - unsure_count
         result_rows.append(
             {
                 "Reihenfolge": meta["sort_order"],
@@ -717,6 +734,11 @@ def build_card_analysis(raw_df):
                 "Ø Abweichung zur Referenz": round(mean_abs_deviation, 2),
                 "Spannweite": spread,
                 "Entropie %": round(entropy, 1),
+                "Sicher (!)": secure_count,
+                "Unsicher (?)": unsure_count,
+                "Ohne Angabe": no_answer_count,
+                "Sicher %": round(100 * secure_count / number_ratings, 1) if number_ratings else None,
+                "Unsicher %": round(100 * unsure_count / number_ratings, 1) if number_ratings else None,
             }
         )
 
@@ -726,43 +748,6 @@ def build_card_analysis(raw_df):
 def full_table_height(df):
     """Genug Höhe, damit nur die Browserseite vertikal scrollt."""
     return 48 + len(df) * 35
-
-
-def build_group_summary(card_analysis_df, group_column, order_column=None):
-    if card_analysis_df.empty:
-        return pd.DataFrame()
-
-    grouped = (
-        card_analysis_df
-        .groupby(group_column, as_index=False)
-        .agg(
-            Karten=("Karte", "count"),
-            **{
-                "Ø Übereinstimmung %": ("Übereinstimmung %", "mean"),
-                "Ø Referenz-Treffer %": ("Referenz-Treffer %", "mean"),
-                "Ø Abweichung": ("Ø Abweichung zur Referenz", "mean"),
-            },
-        )
-    )
-
-    if order_column is not None:
-        order_map = (
-            card_analysis_df[[group_column, order_column]]
-            .drop_duplicates()
-            .set_index(group_column)[order_column]
-            .to_dict()
-        )
-        grouped["__order"] = grouped[group_column].map(order_map)
-        grouped = grouped.sort_values("__order").drop(columns="__order")
-
-    for column in [
-        "Ø Übereinstimmung %",
-        "Ø Referenz-Treffer %",
-        "Ø Abweichung",
-    ]:
-        grouped[column] = grouped[column].round(1 if "%" in column else 2)
-
-    return grouped
 
 
 def build_rater_level_analysis(raw_df, participant_id):
@@ -842,27 +827,60 @@ def build_rater_level_analysis(raw_df, participant_id):
 
     return result[columns].reset_index(drop=True)
 
+def build_confidence_accuracy_analysis(raw_df):
+    """Referenz-Trefferquoten je Sicherheitszustand (nur explizite Antworten)."""
+    columns = ["Sicherheit", "Bewertungen", "Treffer", "Referenz-Trefferquote %"]
+    if raw_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for confidence_value, label in [(True, "Sicher (!)"), (False, "Unsicher (?)")]:
+        subset = raw_df[raw_df["confidence"].eq(confidence_value)]
+        count = len(subset)
+        hits = int((subset["participant_level"] == subset["reference_level"]).sum())
+        rows.append({
+            "Sicherheit": label,
+            "Bewertungen": count,
+            "Treffer": hits,
+            "Referenz-Trefferquote %": round(100 * hits / count, 1) if count else None,
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def build_confidence_level_analysis(raw_df):
+    """Sicherheitsverteilung nach Referenzniveau; Quoten unter expliziten Antworten."""
+    columns = ["Referenzniveau", "Bewertungen", "Mit Angabe", "Sicher (!)",
+               "Unsicher (?)", "Ohne Angabe", "Sicher %", "Unsicher %"]
+    rows = []
+    for level in LEVELS:
+        subset = raw_df[raw_df["reference_level"] == level]
+        total = len(subset)
+        secure = int(subset["confidence"].eq(True).sum())
+        unsure = int(subset["confidence"].eq(False).sum())
+        answered = secure + unsure
+        rows.append({
+            "Referenzniveau": level,
+            "Bewertungen": total,
+            "Mit Angabe": answered,
+            "Sicher (!)": secure,
+            "Unsicher (?)": unsure,
+            "Ohne Angabe": total - answered,
+            "Sicher %": round(100 * secure / answered, 1) if answered else None,
+            "Unsicher %": round(100 * unsure / answered, 1) if answered else None,
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
 def render_admin_dashboard(rows):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
     card_analysis_df = build_card_analysis(raw_df)
     rater_analysis_df = build_rater_analysis(raw_df)
+    confidence_accuracy_df = build_confidence_accuracy_analysis(raw_df)
+    confidence_level_df = build_confidence_level_analysis(raw_df)
 
     number_submissions = len(submissions_df)
     number_assignments = len(raw_df)
-    perfect_consensus_count = int(
-        (
-            (card_analysis_df["Übereinstimmung %"] == 100.0)
-            & (card_analysis_df["Bewertungen"] > 0)
-        ).sum()
-    )
-    low_agreement_count = int(
-        (
-            (card_analysis_df["Übereinstimmung %"] < 50.0)
-            & (card_analysis_df["Bewertungen"] > 0)
-        ).sum()
-    )
-
     if submissions_df.empty:
         last_submission = "—"
     else:
@@ -885,62 +903,26 @@ def render_admin_dashboard(rows):
         tab_overview,
         tab_submissions,
         tab_cards,
-        tab_consensus,
-        tab_dissent,
+        tab_confidence,
         tab_raters,
     ) = st.tabs(
         [
             "📌 Überblick",
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
-            "✅ TOP Konsens",
-            "⚠️ Problemfälle",
+            "❗ Sicherheitsanalyse",
             "👥 Bewerter:innen",
         ]
     )
 
     # 1. Überblick
     with tab_overview:
-        metric_1, metric_2, metric_3, metric_4 = st.columns(4)
+        metric_1, metric_2 = st.columns(2)
         metric_1.metric("Abgaben", number_submissions)
         metric_2.metric("Zuordnungen", number_assignments)
-        metric_3.metric("100 % Konsens", perfect_consensus_count)
-        metric_4.metric("< 50 % Übereinstimmung", low_agreement_count)
 
         st.write(f"**Letzte Abgabe:** {last_submission}")
         st.write(f"**Aktive Karten in der Erhebung:** {len(CARDS)}")
-
-        st.divider()
-        st.subheader("Auswertung nach Kategorie und Referenzniveau")
-
-        category_summary = build_group_summary(
-            card_analysis_df,
-            "Kategorie",
-            "Kategorie-Nr",
-        )
-        level_summary = build_group_summary(
-            card_analysis_df,
-            "Referenzniveau",
-            "Level-Nr",
-        )
-
-        summary_left, summary_right = st.columns(2)
-        with summary_left:
-            st.markdown("**Nach inhaltlicher Kategorie**")
-            st.dataframe(
-                category_summary,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(category_summary),
-            )
-        with summary_right:
-            st.markdown("**Nach Referenzniveau**")
-            st.dataframe(
-                level_summary,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(level_summary),
-            )
 
         st.divider()
         st.subheader("Downloads")
@@ -966,6 +948,48 @@ def render_admin_dashboard(rows):
                 "📥 Kartenanalyse als CSV",
                 data=analysis_csv,
                 file_name="kartenanalyse.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.markdown("**Sicherheitsanalyse**")
+        download_3, download_4 = st.columns(2)
+        with download_3:
+            st.download_button(
+                "📥 Sicherheit und Treffergenauigkeit als CSV",
+                data=confidence_accuracy_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_treffergenauigkeit.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with download_4:
+            st.download_button(
+                "📥 Sicherheit nach Referenzniveau als CSV",
+                data=confidence_level_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="sicherheit_nach_referenzniveau.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.markdown("**Bewerter:innen**")
+        st.download_button(
+            "📥 Bewerter:innen als CSV",
+            data=rater_analysis_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"bewerter_{APP_PROFICIENCY}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        if not rater_analysis_df.empty:
+            export_participant = st.selectbox(
+                "Bewerter:in für den Niveauanalyse-Export auswählen",
+                options=sorted(raw_df["participant_id"].dropna().unique().tolist()),
+                key="export_rater",
+            )
+            export_level_df = build_rater_level_analysis(raw_df, export_participant)
+            st.download_button(
+                "📥 Niveauanalyse als CSV",
+                data=export_level_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"niveauanalyse_{export_participant}_{APP_PROFICIENCY}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -1050,121 +1074,68 @@ def render_admin_dashboard(rows):
             },
         )
 
-    # 4. TOP 10 vollständiger Konsens
-    with tab_consensus:
-        st.subheader("TOP 10 – vollständiger Konsens")
-        st.write(
-            "Hier erscheinen Karten, bei denen **100 % der Teilnehmenden "
-            "dieselbe Einstufung gewählt haben**. Zusätzlich sehen Sie, "
-            "ob dieser Konsens dem Referenzniveau entspricht."
+    # Sicherheitsanalyse: Genauigkeit und Verteilung nach Referenzniveau
+    with tab_confidence:
+        st.subheader("Sicherheit und Referenz-Trefferquote")
+        st.caption(
+            "Vergleich der exakten Übereinstimmung mit dem Referenzniveau "
+            "für ausdrücklich als sicher bzw. unsicher markierte Karten. "
+            "Bewertungen ohne Sicherheitsangabe werden hier nicht einer "
+            "der beiden Gruppen zugerechnet."
         )
-
-        perfect_df = (
-            card_analysis_df[
-                (card_analysis_df["Übereinstimmung %"] == 100.0)
-                & (card_analysis_df["Bewertungen"] > 0)
-            ]
-            .sort_values(
-                ["Bewertungen", "Reihenfolge"],
-                ascending=[False, True],
-            )
-            .head(10)
-        )
-
-        if perfect_df.empty:
-            st.info("Aktuell gibt es keine Karte mit 100 % Übereinstimmung.")
+        if raw_df.empty or not raw_df["confidence"].notna().any():
+            st.info("Noch keine Bewertungen mit Sicherheitsangabe vorhanden.")
         else:
-            perfect_view = perfect_df[
-                [
-                    "Karte",
-                    "Text",
-                    "Kategorie",
-                    "Referenzniveau",
-                    "Bewertungen",
-                    "Mehrheit",
-                    "Mehrheit = Referenz",
-                    "Übereinstimmung %",
-                ]
-            ]
             st.dataframe(
-                perfect_view,
+                confidence_accuracy_df,
                 hide_index=True,
                 use_container_width=True,
-                height=full_table_height(perfect_view),
-            )
-
-    # 5. Problemfälle
-    with tab_dissent:
-        st.subheader("Besonders problematische Karten")
-        st.write(
-            "Sortierung: zuerst geringe Übereinstimmung, bei Gleichstand "
-            "größere Spannweite und danach höhere Entropie."
-        )
-
-        problematic_df = (
-            card_analysis_df[
-                card_analysis_df["Bewertungen"] > 0
-            ]
-            .sort_values(
-                [
-                    "Übereinstimmung %",
-                    "Spannweite",
-                    "Entropie %",
-                ],
-                ascending=[True, False, False],
-            )
-            .head(10)
-        )
-
-        if problematic_df.empty:
-            st.info("Noch keine bewerteten Karten vorhanden.")
-        else:
-            problem_view = problematic_df[
-                [
-                    "Karte",
-                    "Text",
-                    "Kategorie",
-                    "Referenzniveau",
-                    "Bewertungen",
-                    "Mehrheit",
-                    "Übereinstimmung %",
-                    "Referenz-Treffer %",
-                    "Konsens–Referenz-Differenz",
-                    "Ø Abweichung zur Referenz",
-                    "Spannweite",
-                    "Entropie %",
-                ]
-            ]
-            st.dataframe(
-                problem_view,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(problem_view),
                 column_config={
-                    "Übereinstimmung %": st.column_config.ProgressColumn(
-                        "Übereinstimmung %",
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f %%",
-                    ),
-                    "Referenz-Treffer %": st.column_config.ProgressColumn(
-                        "Referenz-Treffer %",
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f %%",
-                    ),
-                    "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
-                        "Konsens–Referenz-Differenz",
-                        format="%.1f",
-                    ),
-                    "Entropie %": st.column_config.NumberColumn(
-                        "Entropie %",
+                    "Referenz-Trefferquote %": st.column_config.ProgressColumn(
+                        "Referenz-Trefferquote %", min_value=0, max_value=100,
                         format="%.1f %%",
                     ),
                 },
             )
+            chart_data = confidence_accuracy_df.dropna(
+                subset=["Referenz-Trefferquote %"]
+            ).set_index("Sicherheit")
+            if not chart_data.empty:
+                st.bar_chart(
+                    chart_data[["Referenz-Trefferquote %"]],
+                    y="Referenz-Trefferquote %",
+                    x_label="Sicherheitseinschätzung",
+                    y_label="Referenz-Trefferquote in %",
+                )
 
-    # 6. Bewerter:innen
+        st.divider()
+        st.subheader("Sicherheit nach Referenzniveau")
+        st.caption(
+            "Die Prozentwerte für Sicher und Unsicher beziehen sich auf "
+            "Bewertungen mit ausdrücklicher Sicherheitsangabe innerhalb "
+            "des jeweiligen Referenzniveaus. Ohne Angabe wird getrennt gezeigt."
+        )
+        st.dataframe(
+            confidence_level_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Sicher %": st.column_config.ProgressColumn(
+                    "Sicher %", min_value=0, max_value=100, format="%.1f %%"
+                ),
+                "Unsicher %": st.column_config.ProgressColumn(
+                    "Unsicher %", min_value=0, max_value=100, format="%.1f %%"
+                ),
+            },
+        )
+        st.caption(
+            "Hinweis zu älteren Abgaben: Die Datenbank enthält für frühere "
+            "Bewertungen ohne Sicherheitsfunktion ebenfalls NULL. Diese "
+            "lassen sich allein anhand der confidence-Spalte nicht von "
+            "heute freiwillig ausgelassenen Angaben unterscheiden. Daher "
+            "werden sie nicht als unsicher interpretiert."
+        )
+    # Bewerter:innen
     with tab_raters:
         st.subheader("Auswertung nach Bewerter:innen")
 
@@ -1211,21 +1182,10 @@ def render_admin_dashboard(rows):
                 },
             )
 
-            csv_data = (
-                rater_analysis_df
-                .to_csv(index=False)
-                .encode("utf-8-sig")
-            )
-
-            st.download_button(
-                "📥 Bewerter:innen als CSV",
-                data=csv_data,
-                file_name=(
-                    f"bewerter_{APP_PROFICIENCY}.csv"
-                ),
-                mime="text/csv",
-            )
-
+        st.caption(
+            "Trefferquoten sicher/unsicher beziehen sich nur auf Karten mit entsprechender Angabe. "
+            "Fehlende Angaben werden separat gezählt."
+        )
         st.caption(
             "Ø Abweichung: mittlerer absoluter "
             "Abstand zum Referenzniveau. "
@@ -1297,20 +1257,6 @@ def render_admin_dashboard(rows):
                 x_label="Referenzniveau",
             )
 
-            st.download_button(
-                "📥 Niveauanalyse als CSV",
-                data=(
-                    level_analysis_df
-                    .to_csv(index=False)
-                    .encode("utf-8-sig")
-                ),
-                file_name=(
-                    f"niveauanalyse_"
-                    f"{selected_participant}_"
-                    f"{APP_PROFICIENCY}.csv"
-                ),
-                mime="text/csv",
-            )
 
 
 def render_admin_area():
@@ -1396,6 +1342,11 @@ def build_rater_analysis(raw_df):
         "Zu hoch",
         "Zu niedrig",
         "Starke Abweichungen",
+        "Sicher (!)",
+        "Unsicher (?)",
+        "Ohne Angabe",
+        "Trefferquote sicher %",
+        "Trefferquote unsicher %",
     ]
 
     if raw_df.empty:
@@ -1407,6 +1358,10 @@ def build_rater_analysis(raw_df):
     }
 
     df = raw_df.copy()
+
+    df["sicher"] = df["confidence"].eq(True)
+    df["unsicher"] = df["confidence"].eq(False)
+    df["ohne_angabe"] = df["confidence"].isna()
 
     df["bewertungs_position"] = (
         df["participant_level"].map(level_positions)
@@ -1475,6 +1430,9 @@ def build_rater_analysis(raw_df):
                 "Starke Abweichungen": (
                     "starke_abweichung", "sum"
                 ),
+                "Sicher (!)": ("sicher", "sum"),
+                "Unsicher (?)": ("unsicher", "sum"),
+                "Ohne Angabe": ("ohne_angabe", "sum"),
                 "Peer-Übereinstimmung %": (
                     "peer_uebereinstimmung", "mean"
                 ),
@@ -1485,6 +1443,17 @@ def build_rater_analysis(raw_df):
         )
     )
 
+
+    hit_by_confidence = (
+        df.groupby(["participant_id", "submitted_at_utc", "confidence"], dropna=False)
+        .agg(treffer=("treffer", "sum"), anzahl=("treffer", "size"))
+        .reset_index()
+    )
+    for confidence_value, label in [(True, "Trefferquote sicher %"), (False, "Trefferquote unsicher %")]:
+        subset = hit_by_confidence[hit_by_confidence["confidence"] == confidence_value].copy()
+        subset[label] = (100 * subset["treffer"] / subset["anzahl"]).round(1)
+        result = result.merge(subset[["participant_id", "submitted_at_utc", label]],
+                              on=["participant_id", "submitted_at_utc"], how="left")
 
     result["Referenz-Treffer %"] = (
         100 * result["Treffer"] / result["Karten"]
@@ -1681,6 +1650,24 @@ COMPONENT_HTML = r"""
             transform 0.08s ease;
     }
 
+    .card-text { padding-right: 43px; }
+    .card { position: relative; }
+    .confidence-controls {
+        position: absolute; top: 5px; right: 5px;
+        display: flex; gap: 3px;
+    }
+    .confidence-btn {
+        width: 18px; height: 18px; padding: 0;
+        border-radius: 5px; border: 1px solid currentColor;
+        background: transparent; font-size: 12px; font-weight: 700;
+        line-height: 16px; cursor: pointer; opacity: .65;
+    }
+    .confidence-btn.secure { color: #198754; }
+    .confidence-btn.unsure { color: #c73535; }
+    .confidence-btn.selected.secure { background: #198754; color: white; opacity: 1; }
+    .confidence-btn.selected.unsure { background: #c73535; color: white; opacity: 1; }
+    .confidence-btn:disabled { opacity: .22; cursor: default; }
+
     .card:hover {
         background:
             rgba(128, 128, 128, 0.14);
@@ -1853,123 +1840,90 @@ COMPONENT_HTML = r"""
     // -------------------------------------------------------------
 
     function readBoard() {
-        const result = [];
-
-        document
-            .querySelectorAll(".column")
-            .forEach(
-                column => {
-                    const items = Array
-                        .from(
-                            column.querySelectorAll(
-                                ".card"
-                            )
-                        )
-                        .map(
-                            card =>
-                                card.dataset.value
-                        );
-
-                    result.push(
-                        {
-                            header:
-                                column.dataset.header,
-
-                            items:
-                                items
-                        }
-                    );
-                }
-            );
-
-        return result;
+        return Array.from(document.querySelectorAll(".column"), column => ({
+            header: column.dataset.header,
+            items: Array.from(column.querySelectorAll(".card"), card => card.dataset.value)
+        }));
     }
 
+    // Sicherheit ist unabhängig von der Kartenposition und optional.
+    let confidenceValues = {};
+    let currentConfidenceJson = "";
 
-    // -------------------------------------------------------------
-    // Board zeichnen
-    // -------------------------------------------------------------
+    function reportState() {
+        currentBoardJson = JSON.stringify(readBoard());
+        currentConfidenceJson = JSON.stringify(confidenceValues);
+        setComponentValue({board: readBoard(), confidence: confidenceValues});
+    }
+
+    function updateButtons() {
+        document.querySelectorAll(".column").forEach(column => {
+            const unassigned = column.dataset.header === "Noch nicht zugeordnet";
+            column.querySelectorAll(".card").forEach(card => {
+                const value = confidenceValues[card.dataset.value];
+                card.querySelectorAll(".confidence-btn").forEach(btn => {
+                    btn.disabled = unassigned;
+                    btn.classList.toggle("selected", value === (btn.dataset.confidence === "true"));
+                });
+            });
+        });
+    }
 
     function renderBoard(board) {
         boardElement.innerHTML = "";
-
-        board.forEach(
-            container => {
-                const column =
-                    document.createElement(
-                        "div"
-                    );
-
-                column.className = "column";
-
-                column.dataset.header =
-                    container.header;
-
-
-                const header =
-                    document.createElement(
-                        "div"
-                    );
-
-                header.className = "header";
-
-                header.textContent =
-                    container.header;
-
-
-                const zone =
-                    document.createElement(
-                        "div"
-                    );
-
-                zone.className = "dropzone";
-
-                container.items.forEach(
-                    value => {
-                        const card =
-                            document.createElement(
-                                "div"
-                            );
-
-                        card.className =
-                            "card";
-
-                        card.draggable =
-                            true;
-
-                        card.dataset.value =
-                            value;
-
-                        /*
-                        textContent ist absichtlich
-                        kein innerHTML.
-                        */
-                        card.textContent =
-                            value;
-
-                        zone.appendChild(
-                            card
-                        );
-                    }
-                );
-
-                column.appendChild(
-                    header
-                );
-
-                column.appendChild(
-                    zone
-                );
-
-                boardElement.appendChild(
-                    column
-                );
-            }
-        );
-
-        currentBoardJson =
-            JSON.stringify(board);
-
+        board.forEach(container => {
+            const column = document.createElement("div");
+            column.className = "column";
+            column.dataset.header = container.header;
+            const header = document.createElement("div");
+            header.className = "header";
+            header.textContent = container.header;
+            const zone = document.createElement("div");
+            zone.className = "dropzone";
+            container.items.forEach(value => {
+                const card = document.createElement("div");
+                card.className = "card";
+                card.draggable = true;
+                card.dataset.value = value;
+                const text = document.createElement("div");
+                text.className = "card-text";
+                text.textContent = value;
+                card.appendChild(text);
+                const controls = document.createElement("div");
+                controls.className = "confidence-controls";
+                [["!", "true", "Sicher"], ["?", "false", "Unsicher"]].forEach(([symbol, bool, title]) => {
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "confidence-btn " + (bool === "true" ? "secure" : "unsure");
+                    btn.dataset.confidence = bool;
+                    btn.textContent = symbol;
+                    btn.title = title + " (erneut klicken zum Abwählen)";
+                    btn.setAttribute("aria-label", title);
+                    btn.draggable = false;
+                    btn.addEventListener("mousedown", event => event.stopPropagation());
+                    btn.addEventListener("dragstart", event => event.preventDefault());
+                    btn.addEventListener("click", event => {
+                        event.stopPropagation();
+                        const next = bool === "true";
+                        if (confidenceValues[value] === next) {
+                            delete confidenceValues[value];
+                        } else {
+                            confidenceValues[value] = next;
+                        }
+                        updateButtons();
+                        reportState();
+                    });
+                    controls.appendChild(btn);
+                });
+                card.appendChild(controls);
+                zone.appendChild(card);
+            });
+            column.appendChild(header);
+            column.appendChild(zone);
+            boardElement.appendChild(column);
+        });
+        currentBoardJson = JSON.stringify(board);
+        updateButtons();
         updateFrameHeight();
     }
 
@@ -2206,6 +2160,7 @@ COMPONENT_HTML = r"""
                     );
                 }
             } else {
+                updateButtons();
                 const newBoard =
                     readBoard();
 
@@ -2226,9 +2181,7 @@ COMPONENT_HTML = r"""
                     currentBoardJson =
                         newBoardJson;
 
-                    setComponentValue(
-                        newBoard
-                    );
+                    reportState();
                 }
             }
 
@@ -2269,6 +2222,12 @@ COMPONENT_HTML = r"""
 
         const board =
             args.board || [];
+        const incomingConfidence = args.confidence || {};
+        if (JSON.stringify(incomingConfidence) !== currentConfidenceJson) {
+            confidenceValues = {...incomingConfidence};
+            currentConfidenceJson = JSON.stringify(confidenceValues);
+            updateButtons();
+        }
 
         const incomingJson =
             JSON.stringify(
@@ -2362,8 +2321,9 @@ _card_sorter_component = (
 def card_sorter(board, key):
     return _card_sorter_component(
         board=board,
+        confidence=st.session_state.get("confidence", {}),
         key=key,
-        default=board,
+        default={"board": board, "confidence": st.session_state.get("confidence", {})},
     )
 
 # -------------------------------------------------------------------
@@ -2456,6 +2416,9 @@ ID_TO_LABEL = {
 
 render_admin_area()
 
+if "confidence" not in st.session_state:
+    st.session_state.confidence = {}
+
 if "sorter_generation" not in st.session_state:
     st.session_state.sorter_generation = 0
 
@@ -2467,6 +2430,7 @@ if (
 ):
     st.session_state.pop("card_order", None)
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
 
 if "submitted" not in st.session_state:
@@ -2477,6 +2441,7 @@ def start_new_entry():
     # Neue Person am gleichen Browser -> neue zufällige Kartenreihenfolge.
     st.session_state.pop("card_order", None)
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
     st.session_state.submitted = False
     st.session_state.participant_id = ""
@@ -2529,10 +2494,17 @@ component_result = card_sorter(
     ),
 )
 
-if component_result != st.session_state.board:
-    if is_safe_board_payload(component_result):
-        st.session_state.board = component_result
-        st.rerun()
+if isinstance(component_result, dict):
+    incoming_board = component_result.get("board")
+    incoming_confidence = component_result.get("confidence", {})
+    if (is_safe_board_payload(incoming_board)
+            and isinstance(incoming_confidence, dict)
+            and all(k in LABEL_TO_ID and type(v) is bool for k, v in incoming_confidence.items())):
+        if (incoming_board != st.session_state.board
+                or incoming_confidence != st.session_state.confidence):
+            st.session_state.board = incoming_board
+            st.session_state.confidence = incoming_confidence
+            st.rerun()
 
 status = validate_board(st.session_state.board)
 assigned = len(CARDS) - status["unassigned_count"]
@@ -2575,6 +2547,7 @@ with reset_col:
 if reset:
     # Beim Zurücksetzen derselben Person bleibt die zufällige Ausgangsreihenfolge gleich.
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
     st.rerun()
 
@@ -2598,6 +2571,7 @@ if submit:
                 save_submission(
                     clean_participant_id,
                     assignments,
+                    {LABEL_TO_ID[k]: v for k, v in st.session_state.confidence.items()},
                 )
             except psycopg.errors.UniqueViolation:
                 st.error(
