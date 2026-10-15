@@ -1241,7 +1241,7 @@ def render_admin_dashboard(rows):
         if spearman_df.empty or len(spearman_df.columns) < 2:
             st.info("Für eine paarweise Rangkorrelation sind mindestens zwei Rater:innen erforderlich.")
         else:
-            st.dataframe(spearman_df, use_container_width=True)
+            st.dataframe(spearman_df, use_container_width=True, height=full_table_height(spearman_df),)
         st.caption("**Spearman-ρ:** paarweise Rangkorrelation der vergebenen Niveaus über dieselben Karten "
                    "(−1 bis +1). Ein hoher Wert bedeutet ähnliche Rangordnung, "
                    "nicht notwendigerweise dieselben Niveaus. "
