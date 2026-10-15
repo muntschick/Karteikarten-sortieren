@@ -750,43 +750,6 @@ def full_table_height(df):
     return 48 + len(df) * 35
 
 
-def build_group_summary(card_analysis_df, group_column, order_column=None):
-    if card_analysis_df.empty:
-        return pd.DataFrame()
-
-    grouped = (
-        card_analysis_df
-        .groupby(group_column, as_index=False)
-        .agg(
-            Karten=("Karte", "count"),
-            **{
-                "Ø Übereinstimmung %": ("Übereinstimmung %", "mean"),
-                "Ø Referenz-Treffer %": ("Referenz-Treffer %", "mean"),
-                "Ø Abweichung": ("Ø Abweichung zur Referenz", "mean"),
-            },
-        )
-    )
-
-    if order_column is not None:
-        order_map = (
-            card_analysis_df[[group_column, order_column]]
-            .drop_duplicates()
-            .set_index(group_column)[order_column]
-            .to_dict()
-        )
-        grouped["__order"] = grouped[group_column].map(order_map)
-        grouped = grouped.sort_values("__order").drop(columns="__order")
-
-    for column in [
-        "Ø Übereinstimmung %",
-        "Ø Referenz-Treffer %",
-        "Ø Abweichung",
-    ]:
-        grouped[column] = grouped[column].round(1 if "%" in column else 2)
-
-    return grouped
-
-
 def build_rater_level_analysis(raw_df, participant_id):
     """
     Trefferquote einer Person getrennt
@@ -918,19 +881,6 @@ def render_admin_dashboard(rows):
 
     number_submissions = len(submissions_df)
     number_assignments = len(raw_df)
-    perfect_consensus_count = int(
-        (
-            (card_analysis_df["Übereinstimmung %"] == 100.0)
-            & (card_analysis_df["Bewertungen"] > 0)
-        ).sum()
-    )
-    low_agreement_count = int(
-        (
-            (card_analysis_df["Übereinstimmung %"] < 50.0)
-            & (card_analysis_df["Bewertungen"] > 0)
-        ).sum()
-    )
-
     if submissions_df.empty:
         last_submission = "—"
     else:
@@ -954,8 +904,6 @@ def render_admin_dashboard(rows):
         tab_submissions,
         tab_cards,
         tab_confidence,
-        tab_consensus,
-        tab_dissent,
         tab_raters,
     ) = st.tabs(
         [
@@ -963,54 +911,18 @@ def render_admin_dashboard(rows):
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
             "❗ Sicherheitsanalyse",
-            "✅ TOP Konsens",
-            "⚠️ Problemfälle",
             "👥 Bewerter:innen",
         ]
     )
 
     # 1. Überblick
     with tab_overview:
-        metric_1, metric_2, metric_3, metric_4 = st.columns(4)
+        metric_1, metric_2 = st.columns(2)
         metric_1.metric("Abgaben", number_submissions)
         metric_2.metric("Zuordnungen", number_assignments)
-        metric_3.metric("100 % Konsens", perfect_consensus_count)
-        metric_4.metric("< 50 % Übereinstimmung", low_agreement_count)
 
         st.write(f"**Letzte Abgabe:** {last_submission}")
         st.write(f"**Aktive Karten in der Erhebung:** {len(CARDS)}")
-
-        st.divider()
-        st.subheader("Auswertung nach Kategorie und Referenzniveau")
-
-        category_summary = build_group_summary(
-            card_analysis_df,
-            "Kategorie",
-            "Kategorie-Nr",
-        )
-        level_summary = build_group_summary(
-            card_analysis_df,
-            "Referenzniveau",
-            "Level-Nr",
-        )
-
-        summary_left, summary_right = st.columns(2)
-        with summary_left:
-            st.markdown("**Nach inhaltlicher Kategorie**")
-            st.dataframe(
-                category_summary,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(category_summary),
-            )
-        with summary_right:
-            st.markdown("**Nach Referenzniveau**")
-            st.dataframe(
-                level_summary,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(level_summary),
-            )
 
         st.divider()
         st.subheader("Downloads")
@@ -1199,121 +1111,7 @@ def render_admin_dashboard(rows):
                 use_container_width=True,
             )
 
-    # 4. TOP 10 vollständiger Konsens
-    with tab_consensus:
-        st.subheader("TOP 10 – vollständiger Konsens")
-        st.write(
-            "Hier erscheinen Karten, bei denen **100 % der Teilnehmenden "
-            "dieselbe Einstufung gewählt haben**. Zusätzlich sehen Sie, "
-            "ob dieser Konsens dem Referenzniveau entspricht."
-        )
-
-        perfect_df = (
-            card_analysis_df[
-                (card_analysis_df["Übereinstimmung %"] == 100.0)
-                & (card_analysis_df["Bewertungen"] > 0)
-            ]
-            .sort_values(
-                ["Bewertungen", "Reihenfolge"],
-                ascending=[False, True],
-            )
-            .head(10)
-        )
-
-        if perfect_df.empty:
-            st.info("Aktuell gibt es keine Karte mit 100 % Übereinstimmung.")
-        else:
-            perfect_view = perfect_df[
-                [
-                    "Karte",
-                    "Text",
-                    "Kategorie",
-                    "Referenzniveau",
-                    "Bewertungen",
-                    "Mehrheit",
-                    "Mehrheit = Referenz",
-                    "Übereinstimmung %",
-                ]
-            ]
-            st.dataframe(
-                perfect_view,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(perfect_view),
-            )
-
-    # 5. Problemfälle
-    with tab_dissent:
-        st.subheader("Besonders problematische Karten")
-        st.write(
-            "Sortierung: zuerst geringe Übereinstimmung, bei Gleichstand "
-            "größere Spannweite und danach höhere Entropie."
-        )
-
-        problematic_df = (
-            card_analysis_df[
-                card_analysis_df["Bewertungen"] > 0
-            ]
-            .sort_values(
-                [
-                    "Übereinstimmung %",
-                    "Spannweite",
-                    "Entropie %",
-                ],
-                ascending=[True, False, False],
-            )
-            .head(10)
-        )
-
-        if problematic_df.empty:
-            st.info("Noch keine bewerteten Karten vorhanden.")
-        else:
-            problem_view = problematic_df[
-                [
-                    "Karte",
-                    "Text",
-                    "Kategorie",
-                    "Referenzniveau",
-                    "Bewertungen",
-                    "Mehrheit",
-                    "Übereinstimmung %",
-                    "Referenz-Treffer %",
-                    "Konsens–Referenz-Differenz",
-                    "Ø Abweichung zur Referenz",
-                    "Spannweite",
-                    "Entropie %",
-                ]
-            ]
-            st.dataframe(
-                problem_view,
-                hide_index=True,
-                use_container_width=True,
-                height=full_table_height(problem_view),
-                column_config={
-                    "Übereinstimmung %": st.column_config.ProgressColumn(
-                        "Übereinstimmung %",
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f %%",
-                    ),
-                    "Referenz-Treffer %": st.column_config.ProgressColumn(
-                        "Referenz-Treffer %",
-                        min_value=0,
-                        max_value=100,
-                        format="%.1f %%",
-                    ),
-                    "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
-                        "Konsens–Referenz-Differenz",
-                        format="%.1f",
-                    ),
-                    "Entropie %": st.column_config.NumberColumn(
-                        "Entropie %",
-                        format="%.1f %%",
-                    ),
-                },
-            )
-
-    # 6. Bewerter:innen
+    # Bewerter:innen
     with tab_raters:
         st.subheader("Auswertung nach Bewerter:innen")
 
