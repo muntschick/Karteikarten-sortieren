@@ -2665,17 +2665,33 @@ if st.session_state.submitted:
     )
     st.stop()
 
+
 st.markdown(
     """
-    <div style="font-size: 0.85rem; color: gray; line-height: 1.6;">
+    <div style="font-size: 0.85rem; color: gray; line-height: 1.8;">
         Ziehen Sie die Karten in die gewünschte Niveauspalte.
         Klicken Sie auf
-        <span style="color: #16a34a; font-weight: bold;">[!]</span>,
+        <span style="
+            display: inline-block;
+            color: #16a34a;
+            border: 1px solid #16a34a;
+            border-radius: 4px;
+            padding: 0px 5px;
+            font-weight: bold;
+            line-height: 1.4;
+        ">!</span>,
         wenn Sie sich bei Ihrer Einstufung sicher sind,
         oder auf
-        <span style="color: #dc2626; font-weight: bold;">[?]</span>,
+        <span style="
+            display: inline-block;
+            color: #dc2626;
+            border: 1px solid #dc2626;
+            border-radius: 4px;
+            padding: 0px 5px;
+            font-weight: bold;
+            line-height: 1.4;
+        ">?</span>,
         wenn Sie sich unsicher sind.
-        Die Angabe ist freiwillig.
         <br>
         Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt.
         Die Nummerierung der Karten (K1–K48) entspricht nicht
@@ -2684,6 +2700,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 
 component_result = card_sorter(
     st.session_state.board,
