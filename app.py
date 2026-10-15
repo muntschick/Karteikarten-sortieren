@@ -240,6 +240,7 @@ def init_db():
                     card_id TEXT NOT NULL,
                     level TEXT NOT NULL
                         CHECK (level IN ('Pre-A1', 'A1', 'A2', 'B1', 'B2')),
+                    confidence BOOLEAN,
                     PRIMARY KEY (submission_id, card_id)
                 )
                 """
@@ -270,6 +271,13 @@ def init_db():
                     RENAME COLUMN category TO level
                     """
                 )
+
+            cur.execute(
+                """
+                ALTER TABLE public.assignments
+                ADD COLUMN IF NOT EXISTS confidence BOOLEAN
+                """
+            )
 
             cur.execute(
                 """
@@ -363,7 +371,7 @@ def load_cards(proficiency):
     return cards, metadata
 
 
-def save_submission(participant_id, assignments):
+def save_submission(participant_id, assignments, confidence):
     """
     Speichert eine vollständige Abgabe
     einschließlich der Kompetenz.
@@ -376,6 +384,7 @@ def save_submission(participant_id, assignments):
             submission_id,
             card_id,
             level,
+            confidence.get(card_id),
         )
         for card_id, level
         in sorted(assignments.items())
@@ -431,9 +440,10 @@ def save_submission(participant_id, assignments):
                 INSERT INTO public.assignments (
                     submission_id,
                     card_id,
-                    level
+                    level,
+                    confidence
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, %s)
                 """,
                 rows,
             )
@@ -461,7 +471,8 @@ def load_results():
                     c.category_number,
                     c.level_number,
                     c.sort_order,
-                    s.proficiency
+                    s.proficiency,
+                    a.confidence
                 FROM public.submissions AS s
                 JOIN public.assignments AS a
                     ON a.submission_id = s.submission_id
@@ -503,6 +514,7 @@ def create_results_csv(rows):
             "level_number",
             "sort_order",
             "proficiency",
+            "confidence",
         ]
     )
 
@@ -530,6 +542,7 @@ def results_to_dataframe(rows):
             "level_number",
             "sort_order",
             "proficiency",
+            "confidence",
         ],
     )
 
@@ -688,8 +701,17 @@ def build_card_analysis(raw_df):
             mean_abs_deviation = 0.0
             majority_matches_reference = False
 
+        confidence_counts = card_rows["confidence"].value_counts(dropna=False)
+        secure_count = int((card_rows["confidence"] == True).sum())
+        unsure_count = int((card_rows["confidence"] == False).sum())
+        no_answer_count = number_ratings - secure_count - unsure_count
         result_rows.append(
             {
+                "Sicher (!)": secure_count,
+                "Unsicher (?)": unsure_count,
+                "Ohne Angabe": no_answer_count,
+                "Sicher %": round(100 * secure_count / number_ratings, 1) if number_ratings else None,
+                "Unsicher %": round(100 * unsure_count / number_ratings, 1) if number_ratings else None,
                 "Reihenfolge": meta["sort_order"],
                 "Karte": card_id,
                 "Text": meta["card_text"],
@@ -1227,6 +1249,10 @@ def render_admin_dashboard(rows):
             )
 
         st.caption(
+            "Trefferquoten sicher/unsicher beziehen sich nur auf Karten mit entsprechender Angabe. "
+            "Fehlende Angaben werden separat gezählt."
+        )
+        st.caption(
             "Ø Abweichung: mittlerer absoluter "
             "Abstand zum Referenzniveau. "
             "Ø gerichtete Abweichung: positive Werte "
@@ -1396,6 +1422,11 @@ def build_rater_analysis(raw_df):
         "Zu hoch",
         "Zu niedrig",
         "Starke Abweichungen",
+        "Sicher (!)",
+        "Unsicher (?)",
+        "Ohne Angabe",
+        "Trefferquote sicher %",
+        "Trefferquote unsicher %",
     ]
 
     if raw_df.empty:
@@ -1407,6 +1438,10 @@ def build_rater_analysis(raw_df):
     }
 
     df = raw_df.copy()
+
+    df["sicher"] = df["confidence"].eq(True)
+    df["unsicher"] = df["confidence"].eq(False)
+    df["ohne_angabe"] = df["confidence"].isna()
 
     df["bewertungs_position"] = (
         df["participant_level"].map(level_positions)
@@ -1475,6 +1510,9 @@ def build_rater_analysis(raw_df):
                 "Starke Abweichungen": (
                     "starke_abweichung", "sum"
                 ),
+                "Sicher (!)": ("sicher", "sum"),
+                "Unsicher (?)": ("unsicher", "sum"),
+                "Ohne Angabe": ("ohne_angabe", "sum"),
                 "Peer-Übereinstimmung %": (
                     "peer_uebereinstimmung", "mean"
                 ),
@@ -1485,6 +1523,17 @@ def build_rater_analysis(raw_df):
         )
     )
 
+
+    hit_by_confidence = (
+        df.groupby(["participant_id", "submitted_at_utc", "confidence"], dropna=False)
+        .agg(treffer=("treffer", "sum"), anzahl=("treffer", "size"))
+        .reset_index()
+    )
+    for confidence_value, label in [(True, "Trefferquote sicher %"), (False, "Trefferquote unsicher %")]:
+        subset = hit_by_confidence[hit_by_confidence["confidence"] == confidence_value].copy()
+        subset[label] = (100 * subset["treffer"] / subset["anzahl"]).round(1)
+        result = result.merge(subset[["participant_id", "submitted_at_utc", label]],
+                              on=["participant_id", "submitted_at_utc"], how="left")
 
     result["Referenz-Treffer %"] = (
         100 * result["Treffer"] / result["Karten"]
@@ -1681,6 +1730,24 @@ COMPONENT_HTML = r"""
             transform 0.08s ease;
     }
 
+    .card-text { padding-right: 43px; }
+    .card { position: relative; }
+    .confidence-controls {
+        position: absolute; top: 5px; right: 5px;
+        display: flex; gap: 3px;
+    }
+    .confidence-btn {
+        width: 18px; height: 18px; padding: 0;
+        border-radius: 5px; border: 1px solid currentColor;
+        background: transparent; font-size: 12px; font-weight: 700;
+        line-height: 16px; cursor: pointer; opacity: .65;
+    }
+    .confidence-btn.secure { color: #198754; }
+    .confidence-btn.unsure { color: #c73535; }
+    .confidence-btn.selected.secure { background: #198754; color: white; opacity: 1; }
+    .confidence-btn.selected.unsure { background: #c73535; color: white; opacity: 1; }
+    .confidence-btn:disabled { opacity: .22; cursor: default; }
+
     .card:hover {
         background:
             rgba(128, 128, 128, 0.14);
@@ -1853,123 +1920,90 @@ COMPONENT_HTML = r"""
     // -------------------------------------------------------------
 
     function readBoard() {
-        const result = [];
-
-        document
-            .querySelectorAll(".column")
-            .forEach(
-                column => {
-                    const items = Array
-                        .from(
-                            column.querySelectorAll(
-                                ".card"
-                            )
-                        )
-                        .map(
-                            card =>
-                                card.dataset.value
-                        );
-
-                    result.push(
-                        {
-                            header:
-                                column.dataset.header,
-
-                            items:
-                                items
-                        }
-                    );
-                }
-            );
-
-        return result;
+        return Array.from(document.querySelectorAll(".column"), column => ({
+            header: column.dataset.header,
+            items: Array.from(column.querySelectorAll(".card"), card => card.dataset.value)
+        }));
     }
 
+    // Sicherheit ist unabhängig von der Kartenposition und optional.
+    let confidenceValues = {};
+    let currentConfidenceJson = "";
 
-    // -------------------------------------------------------------
-    // Board zeichnen
-    // -------------------------------------------------------------
+    function reportState() {
+        currentBoardJson = JSON.stringify(readBoard());
+        currentConfidenceJson = JSON.stringify(confidenceValues);
+        setComponentValue({board: readBoard(), confidence: confidenceValues});
+    }
+
+    function updateButtons() {
+        document.querySelectorAll(".column").forEach(column => {
+            const unassigned = column.dataset.header === "Noch nicht zugeordnet";
+            column.querySelectorAll(".card").forEach(card => {
+                const value = confidenceValues[card.dataset.value];
+                card.querySelectorAll(".confidence-btn").forEach(btn => {
+                    btn.disabled = unassigned;
+                    btn.classList.toggle("selected", value === (btn.dataset.confidence === "true"));
+                });
+            });
+        });
+    }
 
     function renderBoard(board) {
         boardElement.innerHTML = "";
-
-        board.forEach(
-            container => {
-                const column =
-                    document.createElement(
-                        "div"
-                    );
-
-                column.className = "column";
-
-                column.dataset.header =
-                    container.header;
-
-
-                const header =
-                    document.createElement(
-                        "div"
-                    );
-
-                header.className = "header";
-
-                header.textContent =
-                    container.header;
-
-
-                const zone =
-                    document.createElement(
-                        "div"
-                    );
-
-                zone.className = "dropzone";
-
-                container.items.forEach(
-                    value => {
-                        const card =
-                            document.createElement(
-                                "div"
-                            );
-
-                        card.className =
-                            "card";
-
-                        card.draggable =
-                            true;
-
-                        card.dataset.value =
-                            value;
-
-                        /*
-                        textContent ist absichtlich
-                        kein innerHTML.
-                        */
-                        card.textContent =
-                            value;
-
-                        zone.appendChild(
-                            card
-                        );
-                    }
-                );
-
-                column.appendChild(
-                    header
-                );
-
-                column.appendChild(
-                    zone
-                );
-
-                boardElement.appendChild(
-                    column
-                );
-            }
-        );
-
-        currentBoardJson =
-            JSON.stringify(board);
-
+        board.forEach(container => {
+            const column = document.createElement("div");
+            column.className = "column";
+            column.dataset.header = container.header;
+            const header = document.createElement("div");
+            header.className = "header";
+            header.textContent = container.header;
+            const zone = document.createElement("div");
+            zone.className = "dropzone";
+            container.items.forEach(value => {
+                const card = document.createElement("div");
+                card.className = "card";
+                card.draggable = true;
+                card.dataset.value = value;
+                const text = document.createElement("div");
+                text.className = "card-text";
+                text.textContent = value;
+                card.appendChild(text);
+                const controls = document.createElement("div");
+                controls.className = "confidence-controls";
+                [["!", "true", "Sicher"], ["?", "false", "Unsicher"]].forEach(([symbol, bool, title]) => {
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "confidence-btn " + (bool === "true" ? "secure" : "unsure");
+                    btn.dataset.confidence = bool;
+                    btn.textContent = symbol;
+                    btn.title = title + " (erneut klicken zum Abwählen)";
+                    btn.setAttribute("aria-label", title);
+                    btn.draggable = false;
+                    btn.addEventListener("mousedown", event => event.stopPropagation());
+                    btn.addEventListener("dragstart", event => event.preventDefault());
+                    btn.addEventListener("click", event => {
+                        event.stopPropagation();
+                        const next = bool === "true";
+                        if (confidenceValues[value] === next) {
+                            delete confidenceValues[value];
+                        } else {
+                            confidenceValues[value] = next;
+                        }
+                        updateButtons();
+                        reportState();
+                    });
+                    controls.appendChild(btn);
+                });
+                card.appendChild(controls);
+                zone.appendChild(card);
+            });
+            column.appendChild(header);
+            column.appendChild(zone);
+            boardElement.appendChild(column);
+        });
+        currentBoardJson = JSON.stringify(board);
+        updateButtons();
         updateFrameHeight();
     }
 
@@ -2206,6 +2240,7 @@ COMPONENT_HTML = r"""
                     );
                 }
             } else {
+                updateButtons();
                 const newBoard =
                     readBoard();
 
@@ -2226,9 +2261,7 @@ COMPONENT_HTML = r"""
                     currentBoardJson =
                         newBoardJson;
 
-                    setComponentValue(
-                        newBoard
-                    );
+                    reportState();
                 }
             }
 
@@ -2269,6 +2302,12 @@ COMPONENT_HTML = r"""
 
         const board =
             args.board || [];
+        const incomingConfidence = args.confidence || {};
+        if (JSON.stringify(incomingConfidence) !== currentConfidenceJson) {
+            confidenceValues = {...incomingConfidence};
+            currentConfidenceJson = JSON.stringify(confidenceValues);
+            updateButtons();
+        }
 
         const incomingJson =
             JSON.stringify(
@@ -2362,8 +2401,9 @@ _card_sorter_component = (
 def card_sorter(board, key):
     return _card_sorter_component(
         board=board,
+        confidence=st.session_state.get("confidence", {}),
         key=key,
-        default=board,
+        default={"board": board, "confidence": st.session_state.get("confidence", {})},
     )
 
 # -------------------------------------------------------------------
@@ -2456,6 +2496,9 @@ ID_TO_LABEL = {
 
 render_admin_area()
 
+if "confidence" not in st.session_state:
+    st.session_state.confidence = {}
+
 if "sorter_generation" not in st.session_state:
     st.session_state.sorter_generation = 0
 
@@ -2467,6 +2510,7 @@ if (
 ):
     st.session_state.pop("card_order", None)
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
 
 if "submitted" not in st.session_state:
@@ -2477,6 +2521,7 @@ def start_new_entry():
     # Neue Person am gleichen Browser -> neue zufällige Kartenreihenfolge.
     st.session_state.pop("card_order", None)
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
     st.session_state.submitted = False
     st.session_state.participant_id = ""
@@ -2529,10 +2574,17 @@ component_result = card_sorter(
     ),
 )
 
-if component_result != st.session_state.board:
-    if is_safe_board_payload(component_result):
-        st.session_state.board = component_result
-        st.rerun()
+if isinstance(component_result, dict):
+    incoming_board = component_result.get("board")
+    incoming_confidence = component_result.get("confidence", {})
+    if (is_safe_board_payload(incoming_board)
+            and isinstance(incoming_confidence, dict)
+            and all(k in LABEL_TO_ID and type(v) is bool for k, v in incoming_confidence.items())):
+        if (incoming_board != st.session_state.board
+                or incoming_confidence != st.session_state.confidence):
+            st.session_state.board = incoming_board
+            st.session_state.confidence = incoming_confidence
+            st.rerun()
 
 status = validate_board(st.session_state.board)
 assigned = len(CARDS) - status["unassigned_count"]
@@ -2575,6 +2627,7 @@ with reset_col:
 if reset:
     # Beim Zurücksetzen derselben Person bleibt die zufällige Ausgangsreihenfolge gleich.
     st.session_state.board = initial_board()
+    st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
     st.rerun()
 
@@ -2598,6 +2651,7 @@ if submit:
                 save_submission(
                     clean_participant_id,
                     assignments,
+                    {LABEL_TO_ID[k]: v for k, v in st.session_state.confidence.items()},
                 )
             except psycopg.errors.UniqueViolation:
                 st.error(
