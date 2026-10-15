@@ -991,8 +991,7 @@ def render_admin_dashboard(rows):
     top_left, top_right = st.columns([3, 1])
     with top_left:
         st.caption(
-            "Live-Auswertung aus Supabase/PostgreSQL. "
-            "Die Teilnehmeransicht erhält die versteckten Stammdaten nicht."
+            "Live-Auswertung aus Supabase/PostgreSQL."
         )
     with top_right:
         if st.button("← Zur Umfrage", use_container_width=True):
@@ -2666,11 +2665,24 @@ if st.session_state.submitted:
     )
     st.stop()
 
-st.caption(
-    "Ziehen Sie die Karten in die gewünschte Kategorie. "
-    "Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt."
-    "Die Nummerierung der Karten (K1-K48)"
-    " entspricht nicht der tatsächlichen Sortierung."
+st.markdown(
+    """
+    <div style="font-size: 0.85rem; color: gray; line-height: 1.6;">
+        Ziehen Sie die Karten in die gewünschte Niveauspalte.
+        Klicken Sie auf
+        <span style="color: #16a34a; font-weight: bold;">[!]</span>,
+        wenn Sie sich bei Ihrer Einstufung sicher sind,
+        oder auf
+        <span style="color: #dc2626; font-weight: bold;">[?]</span>,
+        wenn Sie sich unsicher sind.
+        Die Angabe ist freiwillig.
+        <br>
+        Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt.
+        Die Nummerierung der Karten (K1–K48) entspricht nicht
+        der tatsächlichen Sortierung.
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 component_result = card_sorter(
