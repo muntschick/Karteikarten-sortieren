@@ -711,10 +711,10 @@ def build_card_analysis(raw_df):
             if pair_count else None
         )
 
-        confidence_counts = card_rows["confidence"].value_counts(dropna=False)
         secure_count = int((card_rows["confidence"] == True).sum())
         unsure_count = int((card_rows["confidence"] == False).sum())
         no_answer_count = number_ratings - secure_count - unsure_count
+        answered_count = secure_count + unsure_count
         result_rows.append(
             {
                 "Reihenfolge": meta["sort_order"],
@@ -736,7 +736,7 @@ def build_card_analysis(raw_df):
                 ),
                 "Anteil Modalniveau %": round(agreement, 1),
                 "Referenzübereinstimmung %": round(reference_match, 1),
-                "Konsens–Referenz-Differenz": (
+                "Modal-Referenz": (
                     round(agreement - reference_match, 1)
                     if number_ratings > 0
                     else None
@@ -748,8 +748,8 @@ def build_card_analysis(raw_df):
                 "Sicher (!)": secure_count,
                 "Unsicher (?)": unsure_count,
                 "Ohne Angabe": no_answer_count,
-                "Sicher %": round(100 * secure_count / number_ratings, 1) if number_ratings else None,
-                "Unsicher %": round(100 * unsure_count / number_ratings, 1) if number_ratings else None,
+                "Sicher %": round(100 * secure_count / answered_count, 1) if answered_count else None,
+                "Unsicher %": round(100 * unsure_count / answered_count, 1) if answered_count else None,
             }
         )
 
@@ -882,69 +882,106 @@ def build_confidence_level_analysis(raw_df):
     return pd.DataFrame(rows, columns=columns)
 
 
-def build_reliability_analysis(raw_df):
-    """Krippendorffs ordinales Alpha und Fleiss-Kappa über die vollständige Erhebung.
-
-    Alpha verwendet die ordinale Distanz gemäß Krippendorff aus den
-    gepoolten Kategoriehäufigkeiten und eine Coincidence-Matrix.
-    Fleiss-Kappa setzt gleich viele Ratings pro Karte voraus.
-    """
-    data = raw_df.dropna(subset=["participant_level", "card_id"])
-    rating_groups = [g["participant_level"].tolist() for _, g in data.groupby("card_id")]
-    rating_groups = [g for g in rating_groups if len(g) >= 2]
-    if not rating_groups:
-        return pd.DataFrame([{"Kennzahl": "Krippendorffs α (ordinal)", "Wert": None},
-                             {"Kennzahl": "Fleiss-κ (nominal)", "Wert": None}])
-
+def _reliability_from_counts(counts_by_card):
+    """Punktschätzungen für Krippendorffs Alpha (ordinal) und Fleiss-Kappa (nominal)."""
     n_categories = len(LEVELS)
-    index = {level: i for i, level in enumerate(LEVELS)}
-    counts_by_card = []
-    for group in rating_groups:
-        counts = [0] * n_categories
-        for level in group:
-            counts[index[level]] += 1
-        counts_by_card.append(counts)
-
-    # Alpha: coincidence count o_ij = sum_units count_i*(count_j-[i=j])/(n_unit-1)
     coincidence = [[0.0] * n_categories for _ in LEVELS]
     for counts in counts_by_card:
         m = sum(counts)
+        if m < 2:
+            continue
         for i in range(n_categories):
             for j in range(n_categories):
                 coincidence[i][j] += counts[i] * (counts[j] - (i == j)) / (m - 1)
+
     marginals = [sum(row) for row in coincidence]
     total = sum(marginals)
-    distances = [[0.0] * n_categories for _ in LEVELS]
-    for i in range(n_categories):
-        for j in range(n_categories):
-            if i != j:
-                lo, hi = sorted((i, j))
-                distances[i][j] = (sum(marginals[lo:hi+1]) - (marginals[lo] + marginals[hi]) / 2) ** 2
-    observed = sum(coincidence[i][j] * distances[i][j]
-                   for i in range(n_categories) for j in range(n_categories)) / total
-    expected = (sum(marginals[i] * marginals[j] * distances[i][j]
-                    for i in range(n_categories) for j in range(n_categories)) /
-                (total * (total - 1))) if total > 1 else 0
-    alpha = 1 - observed / expected if expected > 0 else None
+    alpha = None
+    if total > 1:
+        distances = [[0.0] * n_categories for _ in LEVELS]
+        for i in range(n_categories):
+            for j in range(n_categories):
+                if i != j:
+                    lo, hi = sorted((i, j))
+                    distances[i][j] = (
+                        sum(marginals[lo:hi + 1])
+                        - (marginals[lo] + marginals[hi]) / 2
+                    ) ** 2
+        observed = sum(
+            coincidence[i][j] * distances[i][j]
+            for i in range(n_categories) for j in range(n_categories)
+        ) / total
+        expected = sum(
+            marginals[i] * marginals[j] * distances[i][j]
+            for i in range(n_categories) for j in range(n_categories)
+        ) / (total * (total - 1))
+        if expected > 0:
+            alpha = 1 - observed / expected
 
-    # Fleiss: only meaningful for the same count per item
-    lengths = {sum(row) for row in counts_by_card}
     fleiss = None
-    if len(lengths) == 1:
-        n = next(iter(lengths))
+    if counts_by_card and len({sum(row) for row in counts_by_card}) == 1:
+        n = sum(counts_by_card[0])
+        if n >= 2:
+            n_items = len(counts_by_card)
+            observed_agreement = sum(
+                sum(v * (v - 1) for v in counts) / (n * (n - 1))
+                for counts in counts_by_card
+            ) / n_items
+            proportions = [
+                sum(counts[i] for counts in counts_by_card) / (n_items * n)
+                for i in range(n_categories)
+            ]
+            expected_agreement = sum(x * x for x in proportions)
+            if expected_agreement < 1:
+                fleiss = (observed_agreement - expected_agreement) / (1 - expected_agreement)
+    return alpha, fleiss
+
+
+def build_reliability_analysis(raw_df, bootstrap_samples=500):
+    """95-%-Perzentil-Bootstrap-KI durch Resampling ganzer Karten (mit fester Seed)."""
+    columns = ["Kennzahl", "Wert", "95-%-KI Untergrenze", "95-%-KI Obergrenze"]
+    labels = ["Krippendorffs α (ordinal)", "Fleiss-κ (nominal)"]
+    data = raw_df.dropna(subset=["participant_level", "card_id"])
+    counts_by_card = []
+    for _, group in data.groupby("card_id"):
+        if len(group) < 2:
+            continue
+        counts = group["participant_level"].value_counts()
+        counts_by_card.append([int(counts.get(level, 0)) for level in LEVELS])
+
+    if not counts_by_card:
+        return pd.DataFrame([dict(zip(columns, [label, None, None, None])) for label in labels])
+
+    estimates = _reliability_from_counts(counts_by_card)
+    intervals = [(None, None), (None, None)]
+    # Bei zu wenigen unterschiedlichen Karten ist das KI nicht sinnvoll interpretierbar.
+    if len(counts_by_card) >= 5:
+        generator = random.Random(20261016)
+        distribution = [[], []]
         n_items = len(counts_by_card)
-        p_bar = sum((sum(v * (v - 1) for v in counts) / (n * (n - 1)))
-                    for counts in counts_by_card) / n_items
-        p = [sum(counts[i] for counts in counts_by_card) / (n_items * n)
-             for i in range(n_categories)]
-        p_expected = sum(x * x for x in p)
-        if p_expected < 1:
-            fleiss = (p_bar - p_expected) / (1 - p_expected)
+        for _ in range(bootstrap_samples):
+            sample = [counts_by_card[generator.randrange(n_items)] for _ in range(n_items)]
+            values = _reliability_from_counts(sample)
+            for i, value in enumerate(values):
+                if value is not None and math.isfinite(value):
+                    distribution[i].append(value)
+        for i, values in enumerate(distribution):
+            # Bei häufig undefinierten Wiederholungen lieber kein instabiles KI zeigen.
+            if len(values) >= 0.9 * bootstrap_samples:
+                values.sort()
+                lo = values[int(0.025 * (len(values) - 1))]
+                hi = values[int(0.975 * (len(values) - 1))]
+                intervals[i] = (lo, hi)
 
     return pd.DataFrame([
-        {"Kennzahl": "Krippendorffs α (ordinal)", "Wert": round(alpha, 3) if alpha is not None else None},
-        {"Kennzahl": "Fleiss-κ (nominal)", "Wert": round(fleiss, 3) if fleiss is not None else None},
-    ])
+        {
+            "Kennzahl": label,
+            "Wert": round(value, 3) if value is not None else None,
+            "95-%-KI Untergrenze": round(intervals[i][0], 3) if intervals[i][0] is not None else None,
+            "95-%-KI Obergrenze": round(intervals[i][1], 3) if intervals[i][1] is not None else None,
+        }
+        for i, (label, value) in enumerate(zip(labels, estimates))
+    ], columns=columns)
 
 
 def build_spearman_matrix(raw_df):
@@ -1178,6 +1215,19 @@ def render_admin_dashboard(rows):
             use_container_width=True,
             height=full_table_height(card_analysis_view),
             column_config={
+                "Reihenfolge": st.column_config.NumberColumn("Reihenfolge", help="Interne Sortierreihenfolge der Karte in den Stammdaten."),
+                "Karte": st.column_config.TextColumn("Karte", help="Kennung der Karte."),
+                "Text": st.column_config.TextColumn("Text", help="Wortlaut des Deskriptors."),
+                "Kategorie": st.column_config.TextColumn("Kategorie", help="Inhaltliche Kartenkategorie aus den Stammdaten; nicht das zugeordnete Niveau."),
+                "Referenzniveau": st.column_config.TextColumn("Referenzniveau", help="Vorab hinterlegtes Niveau zum Vergleich mit den Bewertungen."),
+                "Bewertungen": st.column_config.NumberColumn("Bewertungen", help="Anzahl vorliegender Niveaueinstufungen für diese Karte."),
+                **{level: st.column_config.NumberColumn(level, help=f"Anzahl der Zuordnungen zur Niveaustufe {level}.") for level in LEVELS},
+                "Modalniveau": st.column_config.TextColumn("Modalniveau", help="Am häufigsten gewähltes Niveau; bei Gleichstand werden mehrere Niveaus angezeigt."),
+                "Sicher (!)": st.column_config.NumberColumn("Sicher (!)", help="Anzahl ausdrücklich als sicher markierter Zuordnungen."),
+                "Unsicher (?)": st.column_config.NumberColumn("Unsicher (?)", help="Anzahl ausdrücklich als unsicher markierter Zuordnungen."),
+                "Ohne Angabe": st.column_config.NumberColumn("Ohne Angabe", help="Zuordnungen ohne Sicherheitsmarkierung; einschließlich älterer Abgaben ohne diese Funktion."),
+                "Sicher %": st.column_config.ProgressColumn("Sicher %", min_value=0, max_value=100, format="%.1f %%", help="Anteil sicherer Einstufungen an allen Einstufungen mit expliziter Sicherheitsangabe (! oder ?)."),
+                "Unsicher %": st.column_config.ProgressColumn("Unsicher %", min_value=0, max_value=100, format="%.1f %%", help="Anteil unsicherer Einstufungen an allen Einstufungen mit expliziter Sicherheitsangabe (! oder ?)."),
                 "Anteil Modalniveau %": st.column_config.ProgressColumn(
                     "Anteil Modalniveau %",
                     min_value=0,
@@ -1201,14 +1251,13 @@ def render_admin_dashboard(rows):
                     ),
                 ),
 
-                "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
-                    "Konsens–Referenz-Differenz",
+                "Modal-Referenz": st.column_config.NumberColumn(
+                    "Modal-Referenz",
                     format="%.1f",
                     help=(
-                        "Unterschied zwischen dem Anteil der "
-                        "häufigsten Einstufung und dem Anteil "
-                        "der referenzkonformen Einstufungen, "
-                        "in Prozentpunkten."
+                        "Anteil Modalniveau minus Referenzübereinstimmung "
+                        "in Prozentpunkten (nie negativ). "
+                        "0 ist auch bei mehreren gleich häufigen Modalniveaus möglich."
                     ),
                 ),
 
@@ -1259,14 +1308,22 @@ def render_admin_dashboard(rows):
         st.markdown("**Erläuterung der Kennzahlen**")
         st.caption("""
         **Modalniveau:** am häufigsten gewähltes Niveau (bei Gleichstand mehrere Niveaus).  
+        
         **Anteil Modalniveau %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität.  
+        
         **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen.  
-        **Konsens–Referenz-Differenz:** Differenz zwischen Anteil Modalniveau und Referenzübereinstimmung in Prozentpunkten.  
+        
+        **Modal-Referenz:** Anteil des Modalniveaus minus Referenzübereinstimmung, in Prozentpunkten (mindestens 0). Bei 0 kann auch ein Gleichstand mehrerer Modalniveaus vorliegen.  
+        
         **Ø Abweichung zur Referenz:** mittlerer absoluter Niveauabstand zur Referenz.  
+        
         **Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe.  
+        
         **Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte (0 = identische Niveaus; maximal 4 Stufen).  
+        
         **Entropie %:** Verteilung der Einstufungen über die fünf Niveaus; höhere Werte bedeuten eine gleichmäßigere Streuung.  
-        **Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; deren Prozentwerte in der Kartenanalyse beziehen sich auf alle Bewertungen einschließlich fehlender Angaben.
+        
+        **Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; Sicher % und Unsicher % beziehen sich nur auf Bewertungen mit ausdrücklicher Sicherheitsangabe (! oder ?). Ohne Angabe wird separat gezählt; ohne explizite Angaben bleiben die Quoten leer.
         """)
 
     # Gesamtreliabilität
@@ -1280,7 +1337,11 @@ def render_admin_dashboard(rows):
         )
         st.caption("""
         **Krippendorffs α (ordinal):** zufallskorrigierte Übereinstimmung für geordnete Niveaus. Ein höherer Wert bedeutet höhere Reliabilität; 1 steht für perfekte Übereinstimmung.
-        **Fleiss-κ (nominal):** zufallskorrigierte exakte Übereinstimmung, ohne die Größe der Niveauabstände zu berücksichtigen. 0 entspricht der modellbedingt erwarteten Übereinstimmung.  
+        
+        **Fleiss-κ (nominal):** zufallskorrigierte exakte Übereinstimmung, ohne die Größe der Niveauabstände zu berücksichtigen. 0 entspricht der modellbedingt erwarteten Übereinstimmung.
+        
+        **95-%-Konfidenzintervalle:** Perzentil-Bootstrap mit 500 Wiederholungen; dabei werden ganze Karten einschließlich aller zugehörigen Ratings wiederholt gezogen. Das Intervall beschreibt die Unsicherheit der Schätzung bei Variation der Kartenstichprobe (nicht der Rater:innen). Es wird bei weniger als fünf mehrfach bewerteten Karten oder zu vielen undefinierten Bootstrap-Werten nicht angezeigt.
+
         Beide Kennzahlen können bei unzureichenden oder konstanten Daten undefiniert sein; Fleiss-κ wird nur bei gleicher Anzahl an Bewertungen pro Karte berechnet.
         """)
 
@@ -1312,6 +1373,9 @@ def render_admin_dashboard(rows):
                 use_container_width=True,
                 height=full_table_height(confidence_accuracy_df),
                 column_config={
+                    "Sicherheit": st.column_config.TextColumn("Sicherheit", help="Explizite Sicherheitsmarkierung der Karten: ! sicher, ? unsicher."),
+                    "Bewertungen": st.column_config.NumberColumn("Bewertungen", help="Anzahl Zuordnungen in dieser Sicherheitsgruppe; fehlende Angaben ausgeschlossen."),
+                    "Treffer": st.column_config.NumberColumn("Treffer", help="Anzahl exakt mit dem Referenzniveau übereinstimmender Zuordnungen."),
                     "Referenz-Trefferquote %": st.column_config.ProgressColumn(
                         "Referenz-Trefferquote %", min_value=0, max_value=100,
                         format="%.1f %%",
@@ -1338,8 +1402,11 @@ def render_admin_dashboard(rows):
         
         st.caption("""
         **Bewertungen:** Zahl der Zuordnungen mit der jeweiligen expliziten Sicherheitsmarkierung.
-        **Treffer:** davon exakt referenzgleiche Zuordnungen.        
-        **Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe.        
+        
+        **Treffer:** davon exakt referenzgleiche Zuordnungen.
+        
+        **Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe.
+        
         Bewertungen ohne Sicherheitsangabe bleiben aus diesem Vergleich ausgeschlossen.
         """)
 
@@ -1355,18 +1422,28 @@ def render_admin_dashboard(rows):
             hide_index=True,
             use_container_width=True,
             column_config={
+                "Referenzniveau": st.column_config.TextColumn("Referenzniveau", help="Hinterlegtes Referenzniveau der Karte."),
+                "Bewertungen": st.column_config.NumberColumn("Bewertungen", help="Alle Bewertungen auf diesem Referenzniveau."),
+                "Mit Angabe": st.column_config.NumberColumn("Mit Angabe", help="Bewertungen mit explizitem ! oder ?."),
+                "Sicher (!)": st.column_config.NumberColumn("Sicher (!)", help="Ausdrücklich als sicher eingestufte Bewertungen."),
+                "Unsicher (?)": st.column_config.NumberColumn("Unsicher (?)", help="Ausdrücklich als unsicher eingestufte Bewertungen."),
+                "Ohne Angabe": st.column_config.NumberColumn("Ohne Angabe", help="Bewertungen ohne Markierung, einschließlich älterer Abgaben ohne Sicherheitsfunktion."),
                 "Sicher %": st.column_config.ProgressColumn(
-                    "Sicher %", min_value=0, max_value=100, format="%.1f %%"
+                    "Sicher %", min_value=0, max_value=100, format="%.1f %%",
+                    help="Anteil sicherer Zuordnungen unter den ausdrücklich markierten Bewertungen dieses Referenzniveaus."
                 ),
                 "Unsicher %": st.column_config.ProgressColumn(
-                    "Unsicher %", min_value=0, max_value=100, format="%.1f %%"
+                    "Unsicher %", min_value=0, max_value=100, format="%.1f %%",
+                    help="Anteil unsicherer Zuordnungen unter den ausdrücklich markierten Bewertungen dieses Referenzniveaus."
                 ),
             },
         )
 
         st.caption("""
-        **Mit Angabe:** Zahl der bewusst als sicher oder unsicher markierten Einstufungen.       
-        **Sicher % / Unsicher %:** jeweiliger Anteil nur unter Bewertungen mit ausdrücklicher Angabe des betreffenden Referenzniveaus.    
+        **Mit Angabe:** Zahl der bewusst als sicher oder unsicher markierten Einstufungen.
+        
+        **Sicher % / Unsicher %:** jeweiliger Anteil nur unter Bewertungen mit ausdrücklicher Angabe des betreffenden Referenzniveaus.
+        
         **Ohne Angabe:** fehlende Sicherheitsmarkierung, nicht automatisch Unsicherheit.
         """)
 
@@ -1513,14 +1590,19 @@ def render_admin_dashboard(rows):
         
         st.caption("""
         **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen pro Person.
+        
         **Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung).
+        
         **Peer-Vergleiche (Karten):** Karten, für die mindestens eine weitere Bewertung vorliegt.
+        
         **Trefferquote sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.
         """)
         
         st.caption("""
         **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau.
+        
         **Ø gerichtete Abweichung:** positive Werte zeigen eine Tendenz zu höheren, negative Werte zu niedrigeren Einstufungen.
+        
         **Starke Abweichungen:** mindestens zwei Niveaustufen Abstand.
         """)
 
@@ -1588,8 +1670,11 @@ def render_admin_dashboard(rows):
 
             st.caption("""
             **Treffer:** exakt referenzgleiche Einstufungen dieser Person.
+            
             **Abweichungen:** nicht referenzgleiche Einstufungen.
+            
             **Trefferquote %:** Treffer geteilt durch die Zahl der Karten auf dem Referenzniveau.
+            
             **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau in Stufen.
             """)
 
@@ -2789,7 +2874,7 @@ st.write(
     "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
     "die beschriebene Leseleistung ohne Unterstützung zuverlässig erbringt. "
     f"Anzahl der Karten: **{len(CARDS)} Karten**, "
-    "Kategorien: **Pre-A1, A1, A2, B1 oder B2**."
+    "Niveaus: **Pre-A1, A1, A2, B1 oder B2**."
 )
 
 participant_id = st.text_input(
