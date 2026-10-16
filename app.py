@@ -731,20 +731,16 @@ def build_card_analysis(raw_df):
                 "B1": counts["B1"],
                 "B2": counts["B2"],
                 "Modalniveau": majority,
-                "Mehrheit = Referenz": (
-                    "Ja" if majority_matches_reference else "Nein"
-                ),
-                "Anteil Modalniveau %": round(agreement, 1),
-                "Referenzübereinstimmung %": round(reference_match, 1),
-                "Modal-Referenz": (
-                    round(agreement - reference_match, 1)
-                    if number_ratings > 0
-                    else None
-                ),
-                "Ø Abweichung zur Referenz": round(mean_abs_deviation, 2),
+                "Modalanteil %": round(agreement, 1),
                 "Spannweite (Stufen)": spread,
                 "Ø paarweiser Niveauabstand": round(pair_distance, 2) if pair_distance is not None else None,
                 "Entropie %": round(entropy, 1),
+                "Referenzübereinstimmung %": round(reference_match, 1),
+                "Ø absolute Referenzabweichung (Stufen)": round(mean_abs_deviation, 2),
+                "Modal-Referenz (PP)": (
+                    round(agreement - reference_match, 1)
+                    if number_ratings > 0 else None
+                ),
                 "Sicher (!)": secure_count,
                 "Unsicher (?)": unsure_count,
                 "Ohne Angabe": no_answer_count,
@@ -773,10 +769,10 @@ def build_rater_level_analysis(raw_df, participant_id):
     columns = [
         "Referenzniveau",
         "Karten",
-        "Treffer",
-        "Abweichungen",
-        "Trefferquote %",
-        "Ø Abweichung",
+        "Referenzgleiche Zuordnungen",
+        "Referenzabweichungen",
+        "Referenzübereinstimmung %",
+        "Ø absolute Referenzabweichung (Stufen)",
     ]
 
     if df.empty:
@@ -799,27 +795,27 @@ def build_rater_level_analysis(raw_df, participant_id):
         df.groupby("reference_level", as_index=False)
         .agg(
             Karten=("card_id", "nunique"),
-            Treffer=("treffer", "sum"),
+            **{"Referenzgleiche Zuordnungen": ("treffer", "sum")},
             **{
-                "Ø Abweichung": (
+                "Ø absolute Referenzabweichung (Stufen)": (
                     "absolute_abweichung", "mean"
                 ),
             },
         )
     )
 
-    result["Abweichungen"] = (
-        result["Karten"] - result["Treffer"]
+    result["Referenzabweichungen"] = (
+        result["Karten"] - result["Referenzgleiche Zuordnungen"]
     )
 
-    result["Trefferquote %"] = (
-        result["Treffer"]
+    result["Referenzübereinstimmung %"] = (
+        result["Referenzgleiche Zuordnungen"]
         / result["Karten"]
         * 100
     ).round(1)
 
-    result["Ø Abweichung"] = (
-        result["Ø Abweichung"].round(2)
+    result["Ø absolute Referenzabweichung (Stufen)"] = (
+        result["Ø absolute Referenzabweichung (Stufen)"].round(2)
     )
 
     result = result.rename(
@@ -839,8 +835,8 @@ def build_rater_level_analysis(raw_df, participant_id):
     return result[columns].reset_index(drop=True)
 
 def build_confidence_accuracy_analysis(raw_df):
-    """Referenz-Trefferquoten je Sicherheitszustand (nur explizite Antworten)."""
-    columns = ["Sicherheit", "Bewertungen", "Treffer", "Referenz-Trefferquote %"]
+    """Referenzübereinstimmung je Sicherheitszustand (nur explizite Antworten)."""
+    columns = ["Sicherheit", "Bewertungen", "Referenzgleiche Zuordnungen", "Referenzübereinstimmung %"]
     if raw_df.empty:
         return pd.DataFrame(columns=columns)
 
@@ -852,8 +848,8 @@ def build_confidence_accuracy_analysis(raw_df):
         rows.append({
             "Sicherheit": label,
             "Bewertungen": count,
-            "Treffer": hits,
-            "Referenz-Trefferquote %": round(100 * hits / count, 1) if count else None,
+            "Referenzgleiche Zuordnungen": hits,
+            "Referenzübereinstimmung %": round(100 * hits / count, 1) if count else None,
         })
     return pd.DataFrame(rows, columns=columns)
 
@@ -1039,17 +1035,17 @@ def render_admin_dashboard(rows):
         tab_overview,
         tab_submissions,
         tab_cards,
+        tab_raters,
         tab_reliability,
         tab_confidence,
-        tab_raters,
     ) = st.tabs(
         [
             "📌 Überblick",
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
+            "👥 Bewerter:innen",
             "📐 Reliabilität",
             "❗ Sicherheitsanalyse",
-            "👥 Bewerter:innen",
         ]
     )
 
@@ -1196,7 +1192,7 @@ def render_admin_dashboard(rows):
                 na_position="last",
             ).drop(columns="_modal_sort")
         elif sort_choice == "Geringstem Modalanteil":
-            sorted_cards = sorted_cards.sort_values("Anteil Modalniveau %")
+            sorted_cards = sorted_cards.sort_values("Modalanteil %")
         elif sort_choice == "Größtem Ø paarweisen Niveauabstand":
             sorted_cards = sorted_cards.sort_values(
                 "Ø paarweiser Niveauabstand", ascending=False, na_position="last"
@@ -1205,7 +1201,6 @@ def render_admin_dashboard(rows):
             columns=[
                 "Kategorie-Nr",
                 "Level-Nr",
-                "Mehrheit = Referenz",
             ],
             errors="ignore",
         )
@@ -1228,8 +1223,8 @@ def render_admin_dashboard(rows):
                 "Ohne Angabe": st.column_config.NumberColumn("Ohne Angabe", help="Zuordnungen ohne Sicherheitsmarkierung; einschließlich älterer Abgaben ohne diese Funktion."),
                 "Sicher %": st.column_config.ProgressColumn("Sicher %", min_value=0, max_value=100, format="%.1f %%", help="Anteil sicherer Einstufungen an allen Einstufungen mit expliziter Sicherheitsangabe (! oder ?)."),
                 "Unsicher %": st.column_config.ProgressColumn("Unsicher %", min_value=0, max_value=100, format="%.1f %%", help="Anteil unsicherer Einstufungen an allen Einstufungen mit expliziter Sicherheitsangabe (! oder ?)."),
-                "Anteil Modalniveau %": st.column_config.ProgressColumn(
-                    "Anteil Modalniveau %",
+                "Modalanteil %": st.column_config.ProgressColumn(
+                    "Modalanteil %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
@@ -1251,11 +1246,11 @@ def render_admin_dashboard(rows):
                     ),
                 ),
 
-                "Modal-Referenz": st.column_config.NumberColumn(
-                    "Modal-Referenz",
+                "Modal-Referenz (PP)": st.column_config.NumberColumn(
+                    "Modal-Referenz (PP)",
                     format="%.1f",
                     help=(
-                        "Anteil Modalniveau minus Referenzübereinstimmung "
+                        "Modalanteil minus Referenzübereinstimmung "
                         "in Prozentpunkten (nie negativ). "
                         "0 ist auch bei mehreren gleich häufigen Modalniveaus möglich."
                     ),
@@ -1270,8 +1265,8 @@ def render_admin_dashboard(rows):
                     ),
                 ),
                 
-                "Ø Abweichung zur Referenz": st.column_config.NumberColumn(
-                    "Ø Abweichung zur Referenz",
+                "Ø absolute Referenzabweichung (Stufen)": st.column_config.NumberColumn(
+                    "Ø absolute Referenzabweichung (Stufen)",
                     format="%.2f",
                     help=(
                         "Durchschnittlicher absoluter Abstand der Einstufungen "
@@ -1309,13 +1304,13 @@ def render_admin_dashboard(rows):
         st.caption("""
         **Modalniveau:** am häufigsten gewähltes Niveau (bei Gleichstand mehrere Niveaus).  
         
-        **Anteil Modalniveau %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität.  
+        **Modalanteil %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität.  
         
         **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen.  
         
-        **Modal-Referenz:** Anteil des Modalniveaus minus Referenzübereinstimmung, in Prozentpunkten (mindestens 0). Bei 0 kann auch ein Gleichstand mehrerer Modalniveaus vorliegen.  
+        **Modal-Referenz (PP):** Modalanteil minus Referenzübereinstimmung, in Prozentpunkten (mindestens 0). Bei 0 kann auch ein Gleichstand mehrerer Modalniveaus vorliegen.  
         
-        **Ø Abweichung zur Referenz:** mittlerer absoluter Niveauabstand zur Referenz.  
+        **Ø absolute Referenzabweichung (Stufen):** mittlerer absoluter Niveauabstand zur Referenz.  
         
         **Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe.  
         
@@ -1358,7 +1353,7 @@ def render_admin_dashboard(rows):
 
     # Sicherheitsanalyse: Genauigkeit und Verteilung nach Referenzniveau
     with tab_confidence:
-        st.subheader("Sicherheit und Referenz-Trefferquote")
+        st.subheader("Subjektive Sicherheit und Referenzübereinstimmung")
         st.caption(
             "Vergleich der exakten Übereinstimmung mit dem Referenzniveau "
             "für ausdrücklich als sicher bzw. unsicher markierte Karten. "
@@ -1375,12 +1370,12 @@ def render_admin_dashboard(rows):
                 column_config={
                     "Sicherheit": st.column_config.TextColumn("Sicherheit", help="Explizite Sicherheitsmarkierung der Karten: ! sicher, ? unsicher."),
                     "Bewertungen": st.column_config.NumberColumn("Bewertungen", help="Anzahl Zuordnungen in dieser Sicherheitsgruppe; fehlende Angaben ausgeschlossen."),
-                    "Treffer": st.column_config.NumberColumn("Treffer", help="Anzahl exakt mit dem Referenzniveau übereinstimmender Zuordnungen."),
-                    "Referenz-Trefferquote %": st.column_config.ProgressColumn(
-                        "Referenz-Trefferquote %", min_value=0, max_value=100,
+                    "Referenzgleiche Zuordnungen": st.column_config.NumberColumn("Referenzgleiche Zuordnungen", help="Anzahl exakt mit dem Referenzniveau übereinstimmender Zuordnungen."),
+                    "Referenzübereinstimmung %": st.column_config.ProgressColumn(
+                        "Referenzübereinstimmung %", min_value=0, max_value=100,
                         format="%.1f %%",
                         help=(
-                            "Treffer geteilt durch die Bewertungen "
+                            "Referenzgleiche Zuordnungen geteilt durch die Bewertungen "
                             "dieser Sicherheitsgruppe. Bewertungen "
                             "ohne Sicherheitsangabe bleiben aus "
                             "diesem Vergleich ausgeschlossen."                 
@@ -1389,29 +1384,29 @@ def render_admin_dashboard(rows):
                 },
             )
             chart_data = confidence_accuracy_df.dropna(
-                subset=["Referenz-Trefferquote %"]
+                subset=["Referenzübereinstimmung %"]
             ).set_index("Sicherheit")
             if not chart_data.empty:
                 st.bar_chart(
-                    chart_data[["Referenz-Trefferquote %"]],
-                    y="Referenz-Trefferquote %",
+                    chart_data[["Referenzübereinstimmung %"]],
+                    y="Referenzübereinstimmung %",
                     x_label="Sicherheitseinschätzung",
-                    y_label="Referenz-Trefferquote in %",
+                    y_label="Referenzübereinstimmung in %",
                 )
 
         
         st.caption("""
         **Bewertungen:** Zahl der Zuordnungen mit der jeweiligen expliziten Sicherheitsmarkierung.
         
-        **Treffer:** davon exakt referenzgleiche Zuordnungen.
+        **Referenzgleiche Zuordnungen:** Anzahl der mit dem Referenzniveau übereinstimmenden Zuordnungen.
         
-        **Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe.
+        **Referenzübereinstimmung %:** Referenzgleiche Zuordnungen geteilt durch die Bewertungen dieser Sicherheitsgruppe.
         
         Bewertungen ohne Sicherheitsangabe bleiben aus diesem Vergleich ausgeschlossen.
         """)
 
         st.divider()
-        st.subheader("Sicherheit nach Referenzniveau")
+        st.subheader("Subjektive Sicherheit nach Referenzniveau")
         st.caption(
             "Die Prozentwerte für Sicher und Unsicher beziehen sich auf "
             "Bewertungen mit ausdrücklicher Sicherheitsangabe innerhalb "
@@ -1461,7 +1456,7 @@ def render_admin_dashboard(rows):
         st.caption(
             f"Einzelne Abgaben für die Kompetenz "
             f"{APP_PROFICIENCY}. "
-            "Referenz-Treffer = exakte Übereinstimmung "
+            "Referenzübereinstimmung = exakte Übereinstimmung "
             "mit dem hinterlegten Referenzniveau."
         )
 
@@ -1502,28 +1497,28 @@ def render_admin_dashboard(rows):
                     help="Anzahl der Karten, für die mindestens eine weitere Bewertung vorliegt.",
                 ),
             
-                "Abweichungen": st.column_config.NumberColumn(
-                    "Abweichungen",
+                "Referenzabweichungen": st.column_config.NumberColumn(
+                    "Referenzabweichungen",
                     format="%d",
                     help="Anzahl der Einstufungen, die nicht dem Referenzniveau entsprechen.",
                 ),
             
-                "Abweichungen %": st.column_config.ProgressColumn(
-                    "Abweichungen %",
+                "Referenzabweichungen %": st.column_config.ProgressColumn(
+                    "Referenzabweichungen %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
                     help="Prozentualer Anteil der nicht referenzgleichen Einstufungen.",
                 ),
             
-                "Ø Abweichung": st.column_config.NumberColumn(
-                    "Ø Abweichung",
+                "Ø absolute Referenzabweichung (Stufen)": st.column_config.NumberColumn(
+                    "Ø absolute Referenzabweichung (Stufen)",
                     format="%.2f",
                     help="Durchschnittlicher absoluter Abstand zum Referenzniveau in Stufen.",
                 ),
             
-                "Ø gerichtete Abweichung": st.column_config.NumberColumn(
-                    "Ø gerichtete Abweichung",
+                "Ø gerichtete Referenzabweichung (Stufen)": st.column_config.NumberColumn(
+                    "Ø gerichtete Referenzabweichung (Stufen)",
                     format="%.2f",
                     help=(
                         "Mittlere Abweichung vom Referenzniveau. "
@@ -1532,20 +1527,20 @@ def render_admin_dashboard(rows):
                     ),
                 ),
             
-                "Zu hoch": st.column_config.NumberColumn(
-                    "Zu hoch",
+                "Oberhalb der Referenz": st.column_config.NumberColumn(
+                    "Oberhalb der Referenz",
                     format="%d",
                     help="Anzahl der Einstufungen oberhalb des Referenzniveaus.",
                 ),
             
-                "Zu niedrig": st.column_config.NumberColumn(
-                    "Zu niedrig",
+                "Unterhalb der Referenz": st.column_config.NumberColumn(
+                    "Unterhalb der Referenz",
                     format="%d",
                     help="Anzahl der Einstufungen unterhalb des Referenzniveaus.",
                 ),
             
-                "Starke Abweichungen": st.column_config.NumberColumn(
-                    "Starke Abweichungen",
+                "Abweichung ≥ 2": st.column_config.NumberColumn(
+                    "Abweichung ≥ 2",
                     format="%d",
                     help="Anzahl der Einstufungen mit mindestens zwei Niveaustufen Abstand zur Referenz.",
                 ),
@@ -1568,16 +1563,16 @@ def render_admin_dashboard(rows):
                     help="Anzahl der Einstufungen ohne Sicherheitsangabe.",
                 ),
             
-                "Trefferquote sicher %": st.column_config.ProgressColumn(
-                    "Trefferquote sicher %",
+                "Referenzübereinstimmung sicher %": st.column_config.ProgressColumn(
+                    "Referenzübereinst. sicher %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
                     help="Referenzübereinstimmung nur bei ausdrücklich sicher bewerteten Karten.",
                 ),
             
-                "Trefferquote unsicher %": st.column_config.ProgressColumn(
-                    "Trefferquote unsicher %",
+                "Referenzübereinstimmung unsicher %": st.column_config.ProgressColumn(
+                    "Referenzübereinst. unsicher %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
@@ -1589,21 +1584,21 @@ def render_admin_dashboard(rows):
 
         
         st.caption("""
-        **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen pro Person.
+        **Referenzübereinstimmung %:** Anteil der Einstufungen einer Person, die dem Referenzniveau entsprechen.
         
         **Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung).
         
         **Peer-Vergleiche (Karten):** Karten, für die mindestens eine weitere Bewertung vorliegt.
         
-        **Trefferquote sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.
+        **Referenzübereinstimmung sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.
         """)
         
         st.caption("""
-        **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau.
+        **Ø absolute Referenzabweichung (Stufen):** mittlerer absoluter Abstand zum Referenzniveau.
         
-        **Ø gerichtete Abweichung:** positive Werte zeigen eine Tendenz zu höheren, negative Werte zu niedrigeren Einstufungen.
+        **Ø gerichtete Referenzabweichung (Stufen):** positive Werte zeigen eine Tendenz zu höheren, negative Werte zu niedrigeren Einstufungen.
         
-        **Starke Abweichungen:** mindestens zwei Niveaustufen Abstand.
+        **Abweichung ≥ 2:** mindestens zwei Niveaustufen Abstand.
         """)
 
 
@@ -1632,7 +1627,7 @@ def render_admin_dashboard(rows):
             )
 
             st.write(
-                f"**Trefferquoten nach Referenzniveau "
+                f"**Referenzübereinstimmung nach Referenzniveau "
                 f"für {selected_participant}**"
             )
 
@@ -1644,9 +1639,9 @@ def render_admin_dashboard(rows):
                     level_analysis_df
                 ),
                 column_config={
-                    "Trefferquote %":
+                    "Referenzübereinstimmung %":
                         st.column_config.ProgressColumn(
-                            "Trefferquote %",
+                            "Referenzübereinstimmung %",
                             min_value=0,
                             max_value=100,
                             format="%.1f %%",
@@ -1656,26 +1651,26 @@ def render_admin_dashboard(rows):
 
             chart_df = (
                 level_analysis_df[
-                    ["Referenzniveau", "Trefferquote %"]
+                    ["Referenzniveau", "Referenzübereinstimmung %"]
                 ]
                 .set_index("Referenzniveau")
             )
 
             st.bar_chart(
                 chart_df,
-                y="Trefferquote %",
-                y_label="Trefferquote in %",
+                y="Referenzübereinstimmung %",
+                y_label="Referenzübereinstimmung in %",
                 x_label="Referenzniveau",
             )
 
             st.caption("""
-            **Treffer:** exakt referenzgleiche Einstufungen dieser Person.
+            **Referenzgleiche Zuordnungen:** exakt referenzgleiche Einstufungen dieser Person.
             
-            **Abweichungen:** nicht referenzgleiche Einstufungen.
+            **Referenzabweichungen:** nicht referenzgleiche Einstufungen.
             
-            **Trefferquote %:** Treffer geteilt durch die Zahl der Karten auf dem Referenzniveau.
+            **Referenzübereinstimmung %:** Referenzgleiche Zuordnungen geteilt durch die Zahl der Karten auf dem Referenzniveau.
             
-            **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau in Stufen.
+            **Ø absolute Referenzabweichung (Stufen):** mittlerer absoluter Abstand zum Referenzniveau.
             """)
 
 
@@ -1751,23 +1746,14 @@ def build_rater_analysis(raw_df):
     in LEVELS, z. B. A1 -> A2.
     """
     columns = [
-        "Teilnehmer-ID",
-        "Karten",
-        "Referenzübereinstimmung %",
-        "Peer-Übereinstimmung %",
-        "Peer-Vergleiche (Karten)",
-        "Abweichungen",
-        "Abweichungen %",
-        "Ø Abweichung",
-        "Ø gerichtete Abweichung",
-        "Zu hoch",
-        "Zu niedrig",
-        "Starke Abweichungen",
-        "Sicher (!)",
-        "Unsicher (?)",
-        "Ohne Angabe",
-        "Trefferquote sicher %",
-        "Trefferquote unsicher %",
+        "Teilnehmer-ID", "Karten",
+        "Peer-Übereinstimmung %", "Peer-Vergleiche (Karten)",
+        "Referenzübereinstimmung %", "Referenzabweichungen", "Referenzabweichungen %",
+        "Ø absolute Referenzabweichung (Stufen)",
+        "Ø gerichtete Referenzabweichung (Stufen)",
+        "Oberhalb der Referenz", "Unterhalb der Referenz", "Abweichung ≥ 2",
+        "Sicher (!)", "Unsicher (?)", "Ohne Angabe",
+        "Referenzübereinstimmung sicher %", "Referenzübereinstimmung unsicher %",
     ]
 
     if raw_df.empty:
@@ -1838,17 +1824,17 @@ def build_rater_analysis(raw_df):
         )
         .agg(
             Karten=("card_id", "nunique"),
-            Treffer=("treffer", "sum"),
+            **{"Referenzgleiche Zuordnungen": ("treffer", "sum")},
             **{
-                "Ø Abweichung": (
+                "Ø absolute Referenzabweichung (Stufen)": (
                     "absolute_abweichung", "mean"
                 ),
-                "Ø gerichtete Abweichung": (
+                "Ø gerichtete Referenzabweichung (Stufen)": (
                     "abweichung", "mean"
                 ),
-                "Zu hoch": ("zu_hoch", "sum"),
-                "Zu niedrig": ("zu_niedrig", "sum"),
-                "Starke Abweichungen": (
+                "Oberhalb der Referenz": ("zu_hoch", "sum"),
+                "Unterhalb der Referenz": ("zu_niedrig", "sum"),
+                "Abweichung ≥ 2": (
                     "starke_abweichung", "sum"
                 ),
                 "Sicher (!)": ("sicher", "sum"),
@@ -1870,22 +1856,22 @@ def build_rater_analysis(raw_df):
         .agg(treffer=("treffer", "sum"), anzahl=("treffer", "size"))
         .reset_index()
     )
-    for confidence_value, label in [(True, "Trefferquote sicher %"), (False, "Trefferquote unsicher %")]:
+    for confidence_value, label in [(True, "Referenzübereinstimmung sicher %"), (False, "Referenzübereinstimmung unsicher %")]:
         subset = hit_by_confidence[hit_by_confidence["confidence"] == confidence_value].copy()
         subset[label] = (100 * subset["treffer"] / subset["anzahl"]).round(1)
         result = result.merge(subset[["participant_id", "submitted_at_utc", label]],
                               on=["participant_id", "submitted_at_utc"], how="left")
 
     result["Referenzübereinstimmung %"] = (
-        100 * result["Treffer"] / result["Karten"]
+        100 * result["Referenzgleiche Zuordnungen"] / result["Karten"]
     ).round(1)
 
-    result["Abweichungen"] = (
-        result["Karten"] - result["Treffer"]
+    result["Referenzabweichungen"] = (
+        result["Karten"] - result["Referenzgleiche Zuordnungen"]
     )
 
-    result["Abweichungen %"] = (
-        100 * result["Abweichungen"] / result["Karten"]
+    result["Referenzabweichungen %"] = (
+        100 * result["Referenzabweichungen"] / result["Karten"]
     ).round(1)
 
     result["Peer-Übereinstimmung %"] = (
@@ -1896,11 +1882,11 @@ def build_rater_analysis(raw_df):
         result["Peer-Vergleiche (Karten)"].astype(int)
     )
     
-    result["Ø Abweichung"] = (
-        result["Ø Abweichung"].round(2)
+    result["Ø absolute Referenzabweichung (Stufen)"] = (
+        result["Ø absolute Referenzabweichung (Stufen)"].round(2)
     )
-    result["Ø gerichtete Abweichung"] = (
-        result["Ø gerichtete Abweichung"].round(2)
+    result["Ø gerichtete Referenzabweichung (Stufen)"] = (
+        result["Ø gerichtete Referenzabweichung (Stufen)"].round(2)
     )
 
     result = result.rename(
