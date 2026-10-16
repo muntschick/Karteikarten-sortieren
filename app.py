@@ -18,11 +18,8 @@ import streamlit.components.v1 as components
 LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
 UNASSIGNED = "Noch nicht zugeordnet"
 
-# Kompetenz dieser App
-APP_PROFICIENCY = st.secrets.get(
-    "APP_PROFICIENCY",
-    "Lesen"
-)
+# Für welche Kompetenz die App eingestellt wird, ist in Streamlit-secrets festgelegt
+APP_PROFICIENCY = st.secrets["APP_PROFICIENCY"]
 
 # Diese Variablen werden nach dem Login aus Supabase befüllt.
 # An den Browser werden für die Teilnehmeransicht nur card_id + card_text gegeben.
