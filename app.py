@@ -1320,6 +1320,7 @@ def render_admin_dashboard(rows):
                 confidence_accuracy_df,
                 hide_index=True,
                 use_container_width=True,
+                height=full_table_height(confidence_accuracy_df),
                 column_config={
                     "Referenz-Trefferquote %": st.column_config.ProgressColumn(
                         "Referenz-Trefferquote %", min_value=0, max_value=100,
