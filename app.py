@@ -1280,7 +1280,12 @@ def render_admin_dashboard(rows):
     # Gesamtreliabilität
     with tab_reliability:
         st.subheader("Übereinstimmung zwischen den Rater:innen")
-        st.dataframe(reliability_df, hide_index=True, use_container_width=True)
+        st.dataframe(
+            reliability_df,
+            hide_index=True,
+            use_container_width=True,
+            height=full_table_height(reliability_df),
+        )
         st.caption("""
         **Krippendorffs α (ordinal):** zufallskorrigierte Übereinstimmung für geordnete Niveaus. Ein höherer Wert bedeutet höhere Reliabilität; 1 steht für perfekte Übereinstimmung.
         
