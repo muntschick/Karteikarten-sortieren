@@ -2735,7 +2735,7 @@ def card_sorter(board, key):
 # -------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Karteikarten-Zuordnung",
+    page_title=f"Karteikarten-Zuordnung {APP_PROFICIENCY}",
     page_icon="🗂️",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -2851,7 +2851,7 @@ def start_new_entry():
     st.session_state.participant_id = ""
 
 
-st.title("🗂️ Karteikarten-Zuordnung")
+st.title(f"Karteikarten-Zuordnung {APP_PROFICIENCY}")
 st.write(
     "Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
     "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
