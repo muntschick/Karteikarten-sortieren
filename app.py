@@ -1183,12 +1183,22 @@ def render_admin_dashboard(rows):
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
+                    help=(
+                        "Anteil der häufigsten Einstufung "
+                        "an allen Bewertungen einer Karte; "
+                        "zeigt die Konzentration, "
+                        "nicht die zufallskorrigierte Reliabilität."
+                    ),
                 ),
                 "Referenzübereinstimmung %": st.column_config.ProgressColumn(
                     "Referenzübereinstimmung %",
                     min_value=0,
                     max_value=100,
                     format="%.1f %%",
+                    help=(
+                        "Anteil exakt referenzgleicher "
+                        "Zuordnungen."
+                    ),
                 ),
 
                 "Konsens–Referenz-Differenz": st.column_config.NumberColumn(
@@ -1205,36 +1215,49 @@ def render_admin_dashboard(rows):
                 "Entropie %": st.column_config.NumberColumn(
                     "Entropie %",
                     format="%.1f %%",
+                    help=(
+                        "Verteilung der Einstufungen "
+                        "über die fünf Niveaus; höhere "
+                        "Werte bedeuten eine "
+                        "gleichmäßigere Streuung."
+                    ),
                 ),
             },
         )
 
         st.markdown("**Erläuterung der Kennzahlen**")
-        st.caption("**Modalniveau:** am häufigsten gewähltes Niveau (bei Gleichstand mehrere Niveaus). "
-                   "**Anteil Modalniveau %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; "
-                   "zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität. "
-                   "**Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen. "
-                   "**Konsens–Referenz-Differenz:** Differenz zwischen Anteil Modalniveau und Referenzübereinstimmung in Prozentpunkten. "
-                   "**Ø Abweichung zur Referenz:** mittlerer absoluter Niveauabstand zur Referenz. "
-                   "**Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe. "
-                   "**Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte "
-                   "(0 = identische Niveaus; maximal 4 Stufen). "
-                   "**Entropie %:** Verteilung der Einstufungen über die fünf Niveaus; "
-                   "höhere Werte bedeuten eine gleichmäßigere Streuung. "
-                   "**Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; "
-                   "deren Prozentwerte in der Kartenanalyse beziehen sich auf alle Bewertungen einschließlich fehlender Angaben.")
+        st.caption("""
+        **Modalniveau:** am häufigsten gewähltes Niveau (bei Gleichstand mehrere Niveaus).  
+        
+        **Anteil Modalniveau %:** Anteil der häufigsten Einstufung an allen Bewertungen einer Karte; zeigt die Konzentration, nicht die zufallskorrigierte Reliabilität.  
+        
+        **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen.  
+        
+        **Konsens–Referenz-Differenz:** Differenz zwischen Anteil Modalniveau und Referenzübereinstimmung in Prozentpunkten.  
+        
+        **Ø Abweichung zur Referenz:** mittlerer absoluter Niveauabstand zur Referenz.  
+        
+        **Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe.  
+        
+        **Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte (0 = identische Niveaus; maximal 4 Stufen).  
+        
+        **Entropie %:** Verteilung der Einstufungen über die fünf Niveaus; höhere Werte bedeuten eine gleichmäßigere Streuung.  
+        
+        **Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; deren Prozentwerte in der Kartenanalyse beziehen sich auf alle Bewertungen einschließlich fehlender Angaben.
+        """)
 
     # Gesamtreliabilität
     with tab_reliability:
         st.subheader("Übereinstimmung zwischen den Rater:innen")
         st.dataframe(reliability_df, hide_index=True, use_container_width=True)
-        st.caption("**Krippendorffs α (ordinal):** zufallskorrigierte Übereinstimmung für geordnete Niveaus. "
-                   "Ein höherer Wert bedeutet höhere Reliabilität; 1 steht für perfekte Übereinstimmung. "
-                   "**Fleiss-κ (nominal):** zufallskorrigierte exakte Übereinstimmung, "
-                   "ohne die Größe der Niveauabstände zu berücksichtigen. "
-                   "0 entspricht der modellbedingt erwarteten Übereinstimmung. "
-                   "Beide Kennzahlen können bei unzureichenden oder konstanten Daten undefiniert sein; "
-                   "Fleiss-κ wird nur bei gleicher Anzahl an Bewertungen pro Karte berechnet.")
+        st.caption("""
+        **Krippendorffs α (ordinal):** zufallskorrigierte Übereinstimmung für geordnete Niveaus. Ein höherer Wert bedeutet höhere Reliabilität; 1 steht für perfekte Übereinstimmung.
+        
+        **Fleiss-κ (nominal):** zufallskorrigierte exakte Übereinstimmung, ohne die Größe der Niveauabstände zu berücksichtigen. 0 entspricht der modellbedingt erwarteten Übereinstimmung.
+        
+        Beide Kennzahlen können bei unzureichenden oder konstanten Daten undefiniert sein; Fleiss-κ wird nur bei gleicher Anzahl an Bewertungen pro Karte berechnet.
+        """)
+
         st.divider()
         st.subheader("Rangähnlichkeit der Rater:innen (Spearman-ρ)")
         if spearman_df.empty or len(spearman_df.columns) < 2:
@@ -1252,8 +1275,7 @@ def render_admin_dashboard(rows):
         st.caption(
             "Vergleich der exakten Übereinstimmung mit dem Referenzniveau "
             "für ausdrücklich als sicher bzw. unsicher markierte Karten. "
-            "Bewertungen ohne Sicherheitsangabe werden hier nicht einer "
-            "der beiden Gruppen zugerechnet."
+            "Bewertungen ohne Sicherheitsangabe werden hier nicht berücksichtigt."
         )
         if raw_df.empty or not raw_df["confidence"].notna().any():
             st.info("Noch keine Bewertungen mit Sicherheitsangabe vorhanden.")
@@ -1266,6 +1288,11 @@ def render_admin_dashboard(rows):
                     "Referenz-Trefferquote %": st.column_config.ProgressColumn(
                         "Referenz-Trefferquote %", min_value=0, max_value=100,
                         format="%.1f %%",
+                    help=(
+                        "Treffer geteilt durch die Bewertungen "
+                        "dieser Sicherheitsgruppe. Bewertungen "
+                        "ohne Sicherheitsangabe bleiben aus "
+                        "diesem Vergleich ausgeschlossen."                 
                     ),
                 },
             )
@@ -1280,10 +1307,17 @@ def render_admin_dashboard(rows):
                     y_label="Referenz-Trefferquote in %",
                 )
 
-        st.caption("**Bewertungen:** Zahl der Zuordnungen mit der jeweiligen expliziten Sicherheitsmarkierung. "
-                   "**Treffer:** davon exakt referenzgleiche Zuordnungen. "
-                   "**Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe. "
-                   "Ohne Angabe bleibt aus diesem Vergleich ausgeschlossen.")
+        
+        st.caption("""
+        **Bewertungen:** Zahl der Zuordnungen mit der jeweiligen expliziten Sicherheitsmarkierung.
+        
+        **Treffer:** davon exakt referenzgleiche Zuordnungen.
+        
+        **Referenz-Trefferquote %:** Treffer geteilt durch die Bewertungen dieser Sicherheitsgruppe.
+        
+        Bewertungen ohne Sicherheitsangabe bleiben aus diesem Vergleich ausgeschlossen.
+        """)
+
         st.divider()
         st.subheader("Sicherheit nach Referenzniveau")
         st.caption(
@@ -1304,10 +1338,15 @@ def render_admin_dashboard(rows):
                 ),
             },
         )
-        st.caption("**Mit Angabe:** Zahl der bewusst als sicher oder unsicher markierten Einstufungen. "
-                   "**Sicher % / Unsicher %:** jeweiliger Anteil nur unter Bewertungen mit ausdrücklicher Angabe "
-                   "des betreffenden Referenzniveaus. **Ohne Angabe:** fehlende Sicherheitsmarkierung, "
-                   "nicht automatisch Unsicherheit.")
+
+        st.caption("""
+        **Mit Angabe:** Zahl der bewusst als sicher oder unsicher markierten Einstufungen.
+        
+        **Sicher % / Unsicher %:** jeweiliger Anteil nur unter Bewertungen mit ausdrücklicher Angabe des betreffenden Referenzniveaus.
+        
+        **Ohne Angabe:** fehlende Sicherheitsmarkierung, nicht automatisch Unsicherheit.
+        """)
+
         st.caption(
             "Hinweis zu älteren Abgaben: Die Datenbank enthält für frühere "
             "Bewertungen ohne Sicherheitsfunktion ebenfalls NULL. Diese "
@@ -1362,21 +1401,25 @@ def render_admin_dashboard(rows):
                 },
             )
 
-        st.caption("**Referenz-Treffer %:** Anteil exakt referenzgleicher Zuordnungen pro Person. "
-                   "**Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, "
-                   "die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung). "
-                   "**Peer-Vergleiche (Karten):** Karten, für die mindestens eine weitere Bewertung vorliegt. "
-                   "**Trefferquote sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend "
-                   "gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.")
-        st.caption(
-            "Ø Abweichung: mittlerer absoluter "
-            "Abstand zum Referenzniveau. "
-            "Ø gerichtete Abweichung: positive Werte "
-            "zeigen eine Tendenz zu höheren, negative "
-            "Werte zu niedrigeren Einstufungen. "
-            "Starke Abweichungen: mindestens zwei "
-            "Niveaustufen Abstand."
-        )
+        
+        st.caption("""
+        **Referenz-Treffer %:** Anteil exakt referenzgleicher Zuordnungen pro Person.
+        
+        **Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung).
+        
+        **Peer-Vergleiche (Karten):** Karten, für die mindestens eine weitere Bewertung vorliegt.
+        
+        **Trefferquote sicher/unsicher %:** Referenzübereinstimmung jeweils nur bei entsprechend gekennzeichneten Karten; fehlende Sicherheitsangaben werden gesondert gezählt.
+        """)
+        
+        st.caption("""
+        **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau.
+        
+        **Ø gerichtete Abweichung:** positive Werte zeigen eine Tendenz zu höheren, negative Werte zu niedrigeren Einstufungen.
+        
+        **Starke Abweichungen:** mindestens zwei Niveaustufen Abstand.
+        """)
+
 
         st.divider()
         st.subheader("Detailanalyse nach Referenzniveau")
@@ -1438,10 +1481,16 @@ def render_admin_dashboard(rows):
                 y_label="Trefferquote in %",
                 x_label="Referenzniveau",
             )
-            st.caption("**Treffer:** exakt referenzgleiche Einstufungen dieser Person. "
-                       "**Abweichungen:** nicht referenzgleiche Einstufungen. "
-                       "**Trefferquote %:** Treffer geteilt durch die Zahl der Karten auf dem Referenzniveau. "
-                       "**Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau in Stufen.")
+
+            st.caption("""
+            **Treffer:** exakt referenzgleiche Einstufungen dieser Person.
+            
+            **Abweichungen:** nicht referenzgleiche Einstufungen.
+            
+            **Trefferquote %:** Treffer geteilt durch die Zahl der Karten auf dem Referenzniveau.
+            
+            **Ø Abweichung:** mittlerer absoluter Abstand zum Referenzniveau in Stufen.
+            """)
 
 
 
