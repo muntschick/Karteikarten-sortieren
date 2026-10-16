@@ -1413,35 +1413,121 @@ def render_admin_dashboard(rows):
                 height=full_table_height(
                     rater_analysis_df
                 ),
-                column_config={
-                    "Referenz-Treffer %":
-                        st.column_config.ProgressColumn(
-                            "Referenz-Treffer %",
-                            min_value=0,
-                            max_value=100,
-                            format="%.1f %%",
-                        ),
-                    "Abweichungen %":
-                        st.column_config.ProgressColumn(
-                            "Abweichungen %",
-                            min_value=0,
-                            max_value=100,
-                            format="%.1f %%",
-                        ),
+            
+            column_config={
+                "Referenzübereinstimmung %": st.column_config.ProgressColumn(
+                    "Referenzübereinstimmung %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f %%",
+                    help="Anteil der Einstufungen, die exakt dem Referenzniveau entsprechen.",
+                ),
+            
+                "Peer-Übereinstimmung %": st.column_config.ProgressColumn(
+                    "Peer-Übereinstimmung %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f %%",
+                    help=(
+                        "Durchschnittlicher Anteil anderer Rater:innen, "
+                        "die bei denselben Karten dasselbe Niveau vergeben haben."
+                    ),
+                ),
+            
+                "Peer-Vergleiche (Karten)": st.column_config.NumberColumn(
+                    "Peer-Vergleiche (Karten)",
+                    format="%d",
+                    help="Anzahl der Karten, für die mindestens eine weitere Bewertung vorliegt.",
+                ),
+            
+                "Abweichungen": st.column_config.NumberColumn(
+                    "Abweichungen",
+                    format="%d",
+                    help="Anzahl der Einstufungen, die nicht dem Referenzniveau entsprechen.",
+                ),
+            
+                "Abweichungen %": st.column_config.ProgressColumn(
+                    "Abweichungen %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f %%",
+                    help="Prozentualer Anteil der nicht referenzgleichen Einstufungen.",
+                ),
+            
+                "Ø Abweichung": st.column_config.NumberColumn(
+                    "Ø Abweichung",
+                    format="%.2f",
+                    help="Durchschnittlicher absoluter Abstand zum Referenzniveau in Stufen.",
+                ),
+            
+                "Ø gerichtete Abweichung": st.column_config.NumberColumn(
+                    "Ø gerichtete Abweichung",
+                    format="%.2f",
+                    help=(
+                        "Mittlere Abweichung vom Referenzniveau. "
+                        "Positive Werte bedeuten eher höhere, "
+                        "negative Werte eher niedrigere Einstufungen."
+                    ),
+                ),
+            
+                "Zu hoch": st.column_config.NumberColumn(
+                    "Zu hoch",
+                    format="%d",
+                    help="Anzahl der Einstufungen oberhalb des Referenzniveaus.",
+                ),
+            
+                "Zu niedrig": st.column_config.NumberColumn(
+                    "Zu niedrig",
+                    format="%d",
+                    help="Anzahl der Einstufungen unterhalb des Referenzniveaus.",
+                ),
+            
+                "Starke Abweichungen": st.column_config.NumberColumn(
+                    "Starke Abweichungen",
+                    format="%d",
+                    help="Anzahl der Einstufungen mit mindestens zwei Niveaustufen Abstand zur Referenz.",
+                ),
+            
+                "Sicher (!)": st.column_config.NumberColumn(
+                    "Sicher (!)",
+                    format="%d",
+                    help="Anzahl der ausdrücklich als sicher markierten Einstufungen.",
+                ),
+            
+                "Unsicher (?)": st.column_config.NumberColumn(
+                    "Unsicher (?)",
+                    format="%d",
+                    help="Anzahl der ausdrücklich als unsicher markierten Einstufungen.",
+                ),
+            
+                "Ohne Angabe": st.column_config.NumberColumn(
+                    "Ohne Angabe",
+                    format="%d",
+                    help="Anzahl der Einstufungen ohne Sicherheitsangabe.",
+                ),
+            
+                "Trefferquote sicher %": st.column_config.ProgressColumn(
+                    "Trefferquote sicher %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f %%",
+                    help="Referenzübereinstimmung nur bei ausdrücklich sicher bewerteten Karten.",
+                ),
+            
+                "Trefferquote unsicher %": st.column_config.ProgressColumn(
+                    "Trefferquote unsicher %",
+                    min_value=0,
+                    max_value=100,
+                    format="%.1f %%",
+                    help="Referenzübereinstimmung nur bei ausdrücklich unsicher bewerteten Karten.",
+                ),
+            },
 
-                    "Peer-Übereinstimmung %":
-                        st.column_config.ProgressColumn(
-                            "Peer-Übereinstimmung %",
-                            min_value=0,
-                            max_value=100,
-                            format="%.1f %%",
-                        ),
-                },
             )
 
         
         st.caption("""
-        **Referenz-Treffer %:** Anteil exakt referenzgleicher Zuordnungen pro Person.
+        **Referenzübereinstimmung %:** Anteil exakt referenzgleicher Zuordnungen pro Person.
         
         **Peer-Übereinstimmung %:** durchschnittlicher Anteil anderer Rater:innen, die bei denselben Karten dasselbe Niveau vergeben haben (ohne eigene Bewertung).
         
@@ -1605,7 +1691,7 @@ def build_rater_analysis(raw_df):
     columns = [
         "Teilnehmer-ID",
         "Karten",
-        "Referenz-Treffer %",
+        "Referenzübereinstimmung %",
         "Peer-Übereinstimmung %",
         "Peer-Vergleiche (Karten)",
         "Abweichungen",
@@ -1728,7 +1814,7 @@ def build_rater_analysis(raw_df):
         result = result.merge(subset[["participant_id", "submitted_at_utc", label]],
                               on=["participant_id", "submitted_at_utc"], how="left")
 
-    result["Referenz-Treffer %"] = (
+    result["Referenzübereinstimmung %"] = (
         100 * result["Treffer"] / result["Karten"]
     ).round(1)
 
