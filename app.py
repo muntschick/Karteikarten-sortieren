@@ -1211,6 +1211,37 @@ def render_admin_dashboard(rows):
                         "in Prozentpunkten."
                     ),
                 ),
+
+                "Spannweite (Stufen)": st.column_config.NumberColumn(
+                    "Spannweite (Stufen)",
+                    format="%d",
+                    help=(
+                        "Abstand zwischen dem niedrigsten und höchsten "
+                        "vergebenen Niveau (0 bis 4 Stufen)."
+                    ),
+                ),
+                
+                "Ø Abweichung zur Referenz": st.column_config.NumberColumn(
+                    "Ø Abweichung zur Referenz",
+                    format="%.2f",
+                    help=(
+                        "Durchschnittlicher absoluter Abstand der Einstufungen "
+                        "zum Referenzniveau (0 = vollständige Übereinstimmung)."
+                    ),
+                ),
+
+                "Ø paarweiser Niveauabstand": st.column_config.NumberColumn(
+                    "Ø paarweiser Niveauabstand",
+                    format="%.2f",
+                    help=(
+                        "Durchschnittlicher Abstand zwischen den Einstufungen "
+                        "aller möglichen Rater:innen-Paare für dieselbe Karte. "
+                        "0 bedeutet vollständige Übereinstimmung. "
+                        "Je höher der Wert, desto stärker unterscheiden sich "
+                        "die vergebenen Niveaus (maximal 4 Stufen)."
+                    ),
+                ),
+
                 
                 "Entropie %": st.column_config.NumberColumn(
                     "Entropie %",
