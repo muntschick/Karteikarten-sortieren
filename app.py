@@ -1288,11 +1288,12 @@ def render_admin_dashboard(rows):
                     "Referenz-Trefferquote %": st.column_config.ProgressColumn(
                         "Referenz-Trefferquote %", min_value=0, max_value=100,
                         format="%.1f %%",
-                    help=(
-                        "Treffer geteilt durch die Bewertungen "
-                        "dieser Sicherheitsgruppe. Bewertungen "
-                        "ohne Sicherheitsangabe bleiben aus "
-                        "diesem Vergleich ausgeschlossen."                 
+                        help=(
+                            "Treffer geteilt durch die Bewertungen "
+                            "dieser Sicherheitsgruppe. Bewertungen "
+                            "ohne Sicherheitsangabe bleiben aus "
+                            "diesem Vergleich ausgeschlossen."                 
+                        ),
                     ),
                 },
             )
