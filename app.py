@@ -2912,7 +2912,7 @@ st.markdown(
         wenn Sie sich unsicher sind.
         <br>
         Die Kartenreihenfolge wurde für diese Sitzung zufällig gemischt.
-        Die Nummerierung der Karten (K1–K48) entspricht <b>nicht</b>
+        Die Nummerierung der Karten entspricht <b>nicht</b>
         der tatsächlichen Reihenfolge.
     </div>
     """,
