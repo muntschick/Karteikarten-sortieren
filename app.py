@@ -22,7 +22,7 @@ UNASSIGNED = "Noch nicht zugeordnet"
 APP_PROFICIENCY = st.secrets["APP_PROFICIENCY"]
 
 # Diese Variablen werden nach dem Login aus Supabase befüllt.
-# An den Browser werden für die Teilnehmeransicht nur card_id + card_text gegeben.
+# An den Browser werden für die Teilnehmer:innenansicht nur card_id + card_text gegeben.
 CARDS = {}
 CARD_METADATA = {}
 LABEL_TO_ID = {}
@@ -556,7 +556,7 @@ def build_submission_overview(raw_df):
     if raw_df.empty:
         return pd.DataFrame(
             columns=[
-                "Teilnehmer-ID",
+                "Teilnehmer:innen-ID",
                 "Zeitpunkt (UTC)",
                 "Karten",
             ]
@@ -587,13 +587,13 @@ def build_submission_overview(raw_df):
 
     grouped = grouped.rename(
         columns={
-            "participant_id": "Teilnehmer-ID",
+            "participant_id": "Teilnehmer:innen-ID",
         }
     )
 
     return grouped[
         [
-            "Teilnehmer-ID",
+            "Teilnehmer:innen-ID",
             "Zeitpunkt (UTC)",
             "Karten",
         ]
@@ -1743,7 +1743,7 @@ def build_rater_analysis(raw_df):
     in LEVELS, z. B. A1 -> A2.
     """
     columns = [
-        "Teilnehmer-ID", "Karten",
+        "Teilnehmer:innen-ID", "Karten",
         "Peer-Übereinstimmung %", "Peer-Vergleiche (Karten)",
         "Referenzübereinstimmung %", "Referenzabweichungen", "Referenzabweichungen %",
         "Ø absolute Referenzabweichung (Stufen)",
@@ -1887,12 +1887,12 @@ def build_rater_analysis(raw_df):
     )
 
     result = result.rename(
-        columns={"participant_id": "Teilnehmer-ID"}
+        columns={"participant_id": "Teilnehmer:innen-ID"}
     )
 
     return (
         result[columns]
-        .sort_values("Teilnehmer-ID")
+        .sort_values("Teilnehmer:innen-ID")
         .reset_index(drop=True)
     )
 
@@ -2861,7 +2861,7 @@ st.write(
 )
 
 participant_id = st.text_input(
-    "Teilnehmer-ID",
+    "Teilnehmer:innen-ID",
     key="participant_id",
     placeholder="z. B. P001",
     help=(
@@ -2989,9 +2989,9 @@ if submit:
     clean_participant_id = participant_id.strip()
 
     if not clean_participant_id:
-        st.error("Bitte geben Sie zuerst eine Teilnehmer-ID ein.")
+        st.error("Bitte geben Sie zuerst eine Teilnehmer:innen-ID ein.")
     elif len(clean_participant_id) > 100:
-        st.error("Die Teilnehmer-ID darf höchstens 100 Zeichen lang sein.")
+        st.error("Die Teilnehmer:innen-ID darf höchstens 100 Zeichen lang sein.")
     else:
         assignments = board_to_assignments(st.session_state.board)
 
@@ -3009,7 +3009,7 @@ if submit:
                 )
             except psycopg.errors.UniqueViolation:
                 st.error(
-                    "Diese Teilnehmer-ID wurde bereits verwendet. "
+                    "Diese Teilnehmer:innen-ID wurde bereits verwendet. "
                     "Bitte prüfen Sie die ID oder verwenden Sie eine andere."
                 )
             except ValueError as exc:
