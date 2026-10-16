@@ -2759,7 +2759,20 @@ st.markdown(
 def require_access_code():
     if st.session_state.get("access_granted", False):
         return
+        
+    # Automatischer Zugang über speziellen Link
+    link_token = st.query_params.get("access_token", "")
+    correct_token = str(st.secrets.get("ACCESS_LINK_TOKEN", ""))
 
+    if (
+        link_token
+        and correct_token
+        and hmac.compare_digest(link_token, correct_token)
+    ):
+        st.session_state["access_granted"] = True
+        del st.query_params["access_token"]
+        st.rerun()
+        
     st.title("🔐 Zugang zur Umfrage")
     st.write(
         "Bitte geben Sie den Zugangscode ein, "
