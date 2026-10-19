@@ -1020,7 +1020,7 @@ def render_admin_dashboard(rows):
     else:
         last_submission = submissions_df.iloc[0]["Zeitpunkt (UTC)"]
 
-    st.title("f"Admin-Dashboard {APP_PROFICIENCY}")
+    st.title(f"Admin-Dashboard {APP_PROFICIENCY}")
 
     top_left, top_right = st.columns([3, 1])
     with top_left:
