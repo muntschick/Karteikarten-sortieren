@@ -1020,7 +1020,7 @@ def render_admin_dashboard(rows):
     else:
         last_submission = submissions_df.iloc[0]["Zeitpunkt (UTC)"]
 
-    st.title("f"📊 Admin-Dashboard {APP_PROFICIENCY}")
+    st.title("f"Admin-Dashboard {APP_PROFICIENCY}")
 
     top_left, top_right = st.columns([3, 1])
     with top_left:
@@ -2868,7 +2868,7 @@ def start_new_entry():
     st.session_state.participant_id = ""
 
 
-st.title(f"🗂️ Karteikarten-Zuordnung {APP_PROFICIENCY}")
+st.title(f"Karteikarten-Zuordnung {APP_PROFICIENCY}")
 st.write(
     "Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
     "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
