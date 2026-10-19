@@ -2738,9 +2738,18 @@ def card_sorter(board, key):
 # Streamlit-App
 # -------------------------------------------------------------------
 
+admin_open = (
+    st.session_state.get("admin_granted", False)
+    and st.session_state.get("admin_dashboard_open", False)
+)
+
 st.set_page_config(
-    page_title=f"Karteikarten-Zuordnung {APP_PROFICIENCY}",
-    page_icon="🗂️",
+    page_title=(
+        f"Admin-Dashboard {APP_PROFICIENCY}"
+        if admin_open
+        else f"Karteikarten-Zuordnung {APP_PROFICIENCY}"
+    ),
+    page_icon="📊" if admin_open else "🗂️",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
