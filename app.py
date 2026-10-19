@@ -360,7 +360,11 @@ def load_cards(proficiency):
             "card_text": card_text,
             "reference_level": reference_level,
             "item_category": item_category,
-            "category_number": int(category_number),
+            "category_number": (
+                int(category_number)
+                if category_number is not None
+                else None
+            ),
             "level_number": int(level_number),
             "sort_order": int(sort_order),
         }
@@ -1210,7 +1214,7 @@ def render_admin_dashboard(rows):
                 "Reihenfolge": st.column_config.NumberColumn("Reihenfolge", help="Interne Sortierreihenfolge der Karte in den Stammdaten."),
                 "Karte": st.column_config.TextColumn("Karte", help="Kennung der Karte."),
                 "Text": st.column_config.TextColumn("Text", help="Wortlaut des Deskriptors."),
-                "Kategorie": st.column_config.TextColumn("Kategorie", help="Inhaltliche Kartenkategorie aus den Stammdaten; nicht das zugeordnete Niveau."),
+                "Kategorie": st.column_config.TextColumn("Kategorie", help="Inhaltliche Kartenkategorie aus den Stammdaten."),
                 "Referenzniveau": st.column_config.TextColumn("Referenzniveau", help="Vorab hinterlegtes Niveau zum Vergleich mit den Bewertungen."),
                 "Bewertungen": st.column_config.NumberColumn("Bewertungen", help="Anzahl vorliegender Niveaueinstufungen für diese Karte."),
                 **{level: st.column_config.NumberColumn(level, help=f"Anzahl der Zuordnungen zur Niveaustufe {level}.") for level in LEVELS},
