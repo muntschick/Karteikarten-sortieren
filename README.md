@@ -7,4 +7,5 @@ ACCESS_CODE = "Insert_Accesscode"
 ADMIN_CODE = "Insert_Admincode"
 "postgresql://link-zur-Datenbank"
 APP_PROFICIENCY = "gewünschte_Fertigkeit"
+ACCESS_LINK_TOKEN = "token-für-passwortfreien-Direktlink"
 ```
