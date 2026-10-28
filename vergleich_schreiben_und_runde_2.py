@@ -1,6 +1,6 @@
-"""Streamlit: deskriptiver Vergleich Hören (Einzelurteile) / Hören Runde 2 (Gruppenurteile).
+"""Streamlit: deskriptiver Vergleich Schreiben (Einzelurteile) / Schreiben Runde 2 (Gruppenurteile).
 
-Start: streamlit run vergleich_hören_runden.py
+Start: streamlit run vergleich_schreiben_runden.py
 Secrets: DATABASE_URL, ADMIN_CODE (dieselben Werte wie in der bestehenden App).
 Die App liest die vorhandenen Tabellen nur aus; sie schreibt keine Daten in die Datenbank.
 
@@ -25,8 +25,8 @@ import psycopg
 import streamlit as st
 
 
-ROUND_1 = "Hören"
-ROUND_2 = "Hören Runde 2"
+ROUND_1 = "Schreiben"
+ROUND_2 = "Schreiben Runde 2"
 LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
 POSITION = {level: index for index, level in enumerate(LEVELS)}
 
@@ -170,7 +170,7 @@ def show_full_card_selection():
 
 
 st.set_page_config(
-    page_title="Hören – Rundenvergleich",
+    page_title="Schreiben – Rundenvergleich",
     page_icon="📊",
     layout="wide",
 )
@@ -185,7 +185,7 @@ def require_admin():
                 st.rerun()
         return
 
-    st.title("🔒 Hören – Rundenvergleich")
+    st.title("🔒 Schreiben – Rundenvergleich")
     st.write("Bitte zuerst mit dem Admin-Code anmelden.")
     with st.form("rundenvergleich_login"):
         entered = st.text_input("Admin-Code", type="password")
@@ -496,7 +496,7 @@ def show_quality(r1_cards, r2_cards, pairs, r1, r2):
 
 def main():
     require_admin()
-    st.title("📊 Hören – Vergleich von Runde 1 und Runde 2")
+    st.title("📊 Schreiben – Vergleich von Runde 1 und Runde 2")
     st.caption(
         "Runde 1 = individuelle Bewertungen; Runde 2 = gemeinsame Gruppenentscheidungen. "
         "Die Ergebnisse werden nur deskriptiv gegenübergestellt, nicht als "
@@ -558,7 +558,7 @@ def main():
             )
             download_csv(
                 "📥 Kartenvergleich als CSV", table,
-                "hören_rundenvergleich_karten.csv", key="download_karten"
+                "schreiben_rundenvergleich_karten.csv", key="download_karten"
             )
             raw_export = pd.concat([r1, r2], ignore_index=True)
             raw_export["karte_in_beiden_runden_vergleichbar"] = (
@@ -566,7 +566,7 @@ def main():
             )
             download_csv(
                 "📥 Rohdaten beider Runden (mit gemeinsamer Karten-ID)",
-                raw_export, "hören_rundenvergleich_rohdaten.csv", key="download_rohdaten"
+                raw_export, "schreiben_rundenvergleich_rohdaten.csv", key="download_rohdaten"
             )
 
             # Volle Zeilenbreite nutzen und lange Kartentexte möglichst umbrechen.
@@ -666,7 +666,7 @@ def main():
                     )
                     download_csv(
                         "📥 Gruppenvergleich als CSV", group_table,
-                        "hören_rundenvergleich_gruppen.csv", key="download_gruppen"
+                        "schreiben_rundenvergleich_gruppen.csv", key="download_gruppen"
                     )
                     summary = (
                         group_table.groupby("Gruppe", as_index=False)
