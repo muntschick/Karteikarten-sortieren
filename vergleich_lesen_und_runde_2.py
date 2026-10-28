@@ -569,9 +569,9 @@ def main():
                 raw_export, "lesen_rundenvergleich_rohdaten.csv", key="download_rohdaten"
             )
 
-            # Volle Zeilenbreite nutzen und lange Kartentexte möglichst umbrechen.
-            show_full_card_selection()
+            # Kartenauswahl mit automatischer Textkürzung bei wenig Platz
             card_texts = table.set_index("Karte")["Text"].to_dict()
+            
             selected_id = st.selectbox(
                 "Karte für den Verteilungsvergleich wählen",
                 table["Karte"].tolist(),
@@ -579,7 +579,8 @@ def main():
                 width="stretch",
                 key="vergleich_karte",
             )
-            # Sehr lange Texte bleiben unabhängig von der Dropdown-Darstellung lesbar.
+            
+            # Vollständigen Kartentext unterhalb anzeigen
             st.caption(f"**Kartentext:** {card_texts[selected_id]}")
             counts1 = level_counts(r1[r1["basis_id"].eq(selected_id)])
             counts2 = level_counts(r2[r2["basis_id"].eq(selected_id)])
