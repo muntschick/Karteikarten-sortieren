@@ -1,4 +1,4 @@
-"""Streamlit: deskriptiver Vergleich Lesen Runde 1 (Einzelurteile) / Runde 2 (Gruppenurteile).
+"""Streamlit: deskriptiver Vergleich Lesen (Einzelurteile) / Lesen Runde 2 (Gruppenurteile).
 
 Start: streamlit run vergleich_lesen_runden.py
 Secrets: DATABASE_URL, ADMIN_CODE (dieselben Werte wie in der bestehenden App).
@@ -29,6 +29,145 @@ ROUND_1 = "Lesen"
 ROUND_2 = "Lesen Runde 2"
 LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
 POSITION = {level: index for index, level in enumerate(LEVELS)}
+
+# Kurzer Hilfetext pro Tabellenkopf. Die Texte erscheinen beim Hover
+# über den Spaltenüberschriften (Streamlit column_config.help).
+CARD_COLUMN_HELP = {
+    "Karte": "Gemeinsame Karten-ID aus Runde 1; in Runde 2 wird die vorangestellte 2 entfernt.",
+    "Text": "Wortlaut des Deskriptors aus Runde 1. Der Text ist in beiden Runden gleich.",
+    "Kategorie": "Inhaltliche Kategorie der Karte aus den Stammdaten.",
+    "Referenzniveau": "Vorab hinterlegtes Niveau der Karte (Pre-A1 bis B2).",
+    "Einzelurteile R1": "Anzahl individueller Einstufungen dieser Karte in Runde 1.",
+    "Gruppenurteile R2": "Anzahl gemeinsamer Gruppenentscheidungen dieser Karte in Runde 2.",
+    "Modalniveau R1": "Am häufigsten gewähltes Niveau in Runde 1; Gleichstände werden gemeinsam angezeigt.",
+    "Modalniveau R2": "Am häufigsten gewähltes Niveau in Runde 2; Gleichstände werden gemeinsam angezeigt.",
+    "Modalanteil R1 %": "Anteil der häufigsten Einstufung an allen Einzelurteilen in Runde 1.",
+    "Modalanteil R2 %": "Anteil der häufigsten Einstufung an allen Gruppenurteilen in Runde 2.",
+    "Medianposition R1": "Median der Einzelurteile auf der Skala Pre-A1=0 bis B2=4.",
+    "Medianposition R2": "Median der Gruppenurteile auf der Skala Pre-A1=0 bis B2=4.",
+    "Δ Medianposition (Stufen)": "Medianposition R2 minus R1; positiv = höhere Gruppeneinstufungen.",
+    "Referenztreffer R1 %": "Anteil der Einzelurteile, die genau dem Referenzniveau entsprechen.",
+    "Referenztreffer R2 %": "Anteil der Gruppenurteile, die genau dem Referenzniveau entsprechen.",
+    "Δ Referenztreffer (PP)": "Referenztreffer R2 minus R1 in Prozentpunkten (PP).",
+    "Ø Referenzabstand R1": "Mittlerer absoluter Abstand der Einzelurteile zum Referenzniveau in Stufen.",
+    "Ø Referenzabstand R2": "Mittlerer absoluter Abstand der Gruppenurteile zum Referenzniveau in Stufen.",
+    "Δ Ø Referenzabstand": "Mittlerer Referenzabstand R2 minus R1; negativ = näher an der Referenz.",
+}
+
+FREQUENCY_COLUMN_HELP = {
+    "Niveau": "Mögliche Niveaustufe der Karte von Pre-A1 bis B2.",
+    "R1: Anzahl": "Wie viele Einzelpersonen diese Stufe in Runde 1 gewählt haben.",
+    "R2: Anzahl": "Wie viele Gruppen diese Stufe in Runde 2 gewählt haben.",
+}
+
+GROUP_COLUMN_HELP = {
+    "Gruppe": "Gruppenkennung aus Runde 2 (dort als Teilnehmer:innen-ID verwendet).",
+    "Karte": "Gemeinsame Karten-ID für beide Erhebungsrunden.",
+    "Mitglieder laut Liste": "Anzahl der Personen, die in der hochgeladenen Gruppen-CSV dieser Gruppe zugeordnet sind.",
+    "Einzelurteile R1 verfügbar": "Anzahl dieser Gruppenmitglieder mit einer vorhandenen Einzelbewertung für die Karte.",
+    "Modalniveau der Mitglieder R1": "Häufigste frühere Einstufung unter den verfügbaren Einzelurteilen dieser Gruppe.",
+    "Gruppenentscheidung R2": "Von der Gruppe gemeinsam vergebene Niveaustufe in Runde 2.",
+    "Mitglieder mit gleicher Einstufung R1": "Wie viele Mitglieder hatten das spätere Gruppenniveau schon in Runde 1 gewählt?",
+    "Anteil vorher gleicher Einzelurteile %": "Anteil dieser Mitglieder an den verfügbaren Einzelurteilen in Prozent.",
+    "R2 entspricht einem R1-Modalniveau": "Ja, wenn die Gruppenentscheidung zu den häufigsten früheren Einstufungen der Mitglieder gehört.",
+    "In R1 von keinem Mitglied gewählt": "Ja, wenn keines der verfügbaren Einzelurteile das spätere Gruppenniveau hatte.",
+    "Ø Abstand der R1-Einzelurteile zum R2-Gruppenurteil": "Durchschnittlicher absoluter Niveauabstand der früheren Einzelurteile zur Gruppenentscheidung.",
+}
+
+GROUP_SUMMARY_HELP = {
+    "Gruppe": "Kennung der Gruppe aus Runde 2.",
+    "Verglichene Karten": "Zahl der Karten mit einer Gruppenentscheidung und verfügbaren früheren Einzelurteilen.",
+    "Ø Anteil vorher gleicher Einzelurteile %": "Mittlerer Anteil der Mitglieder, die das spätere Gruppenniveau vorher gewählt hatten.",
+    "Entscheidungen, die zuvor kein Mitglied wählte": "Zahl der Karten, bei denen die Gruppe ein von keinem Mitglied vorher gewähltes Niveau vergab.",
+}
+
+QUALITY_COLUMN_HELP = {
+    "basis_id": "Gemeinsame Karten-ID nach Entfernen der führenden 2 aus Runde 2.",
+    "card_text_r1": "Gespeicherter Kartentext in Runde 1.",
+    "card_text_r2": "Gespeicherter Kartentext in Runde 2.",
+    "reference_level_r1": "Hinterlegtes Referenzniveau in Runde 1.",
+    "reference_level_r2": "Hinterlegtes Referenzniveau in Runde 2.",
+}
+
+
+def column_tooltips(dataframe, explanations, *, wide_text=()):
+    """Spalten passend zum Datentyp mit Tooltip am Tabellenkopf darstellen."""
+    result = {}
+    for name in dataframe.columns:
+        help_text = explanations.get(name, "Spalte der Auswertung.")
+        if pd.api.types.is_bool_dtype(dataframe[name]):
+            result[name] = st.column_config.CheckboxColumn(name, help=help_text)
+        elif pd.api.types.is_integer_dtype(dataframe[name]):
+            result[name] = st.column_config.NumberColumn(
+                name, help=help_text, format="%d"
+            )
+        elif pd.api.types.is_numeric_dtype(dataframe[name]):
+            result[name] = st.column_config.NumberColumn(
+                name, help=help_text, format="%.2f"
+            )
+        else:
+            result[name] = st.column_config.TextColumn(
+                name, help=help_text,
+                width="large" if name in wide_text else None,
+            )
+    return result
+
+
+def card_table_height(number_of_rows):
+    """Alle Karten ohne vertikalen Scrollbereich; kompatibel mit älterem Streamlit."""
+    try:
+        version = tuple(int(part) for part in st.__version__.split(".")[:2])
+    except (AttributeError, ValueError):
+        version = (0, 0)
+    # Ab Streamlit 1.52 passt sich die Höhe dem Tabelleninhalt selbst an.
+    if version >= (1, 52):
+        return "content"
+    return max(150, 60 + number_of_rows * 36)
+
+
+def show_full_card_selection():
+    """Langtextauswahl möglichst breit und ohne abschneidende Ellipse anzeigen.
+
+    Streamlit rendert das Dropdown je nach Version unterschiedlich.
+    Die Selektoren berücksichtigen das ältere BaseWeb- und das neuere Widget.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Nur die Kartenauswahl, nicht die weiteren Auswahlfelder. */
+        .st-key-vergleich_karte [data-testid="stSelectbox"] {
+            width: 100% !important;
+            max-width: none !important;
+        }
+        .st-key-vergleich_karte [data-testid="stSelectbox"] [role="combobox"] {
+            min-height: 2.75rem;
+            height: auto !important;
+        }
+        .st-key-vergleich_karte [data-testid="stSelectbox"] [role="combobox"] *,
+        .st-key-vergleich_karte [data-testid="stSelectbox"] [data-baseweb="select"] span {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+            text-overflow: clip !important;
+            overflow: visible !important;
+        }
+        /* Dropdown-Optionen bei BaseWeb- und neueren Streamlit-Versionen. */
+        [data-baseweb="popover"] [role="option"],
+        [data-testid="stSelectboxVirtualDropdown"] [role="option"] {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+            text-overflow: clip !important;
+        }
+        [data-baseweb="popover"] [role="option"] *,
+        [data-testid="stSelectboxVirtualDropdown"] [role="option"] * {
+            white-space: normal !important;
+            overflow-wrap: anywhere !important;
+            text-overflow: clip !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 st.set_page_config(
     page_title="Lesen – Rundenvergleich",
@@ -344,6 +483,12 @@ def show_quality(r1_cards, r2_cards, pairs, r1, r2):
             mismatches[["basis_id", "card_text_r1", "card_text_r2",
                         "reference_level_r1", "reference_level_r2"]],
             hide_index=True, use_container_width=True,
+            column_config=column_tooltips(
+                mismatches[["basis_id", "card_text_r1", "card_text_r2",
+                            "reference_level_r1", "reference_level_r2"]],
+                QUALITY_COLUMN_HELP,
+                wide_text=("card_text_r1", "card_text_r2"),
+            ),
         )
     if r2.empty:
         st.info("Es liegen noch keine Abgaben für Runde 2 vor.")
@@ -400,7 +545,17 @@ def main():
                 "Ein Vergleich der Übereinstimmungsprozentsätze ist wegen "
                 "unterschiedlicher Bewertungseinheiten und Gruppenzahlen deskriptiv."
             )
-            st.dataframe(table, hide_index=True, use_container_width=True)
+            # Alle Kartenzeilen ohne internen vertikalen Scrollbereich.
+            # Die vielen Kennzahl-Spalten benötigen ggf. horizontales Scrollen.
+            st.dataframe(
+                table,
+                hide_index=True,
+                use_container_width=True,
+                height=card_table_height(len(table)),
+                column_config=column_tooltips(
+                    table, CARD_COLUMN_HELP, wide_text=("Text",)
+                ),
+            )
             download_csv(
                 "📥 Kartenvergleich als CSV", table,
                 "lesen_rundenvergleich_karten.csv", key="download_karten"
@@ -414,13 +569,18 @@ def main():
                 raw_export, "lesen_rundenvergleich_rohdaten.csv", key="download_rohdaten"
             )
 
+            # Volle Zeilenbreite nutzen und lange Kartentexte möglichst umbrechen.
+            show_full_card_selection()
+            card_texts = table.set_index("Karte")["Text"].to_dict()
             selected_id = st.selectbox(
                 "Karte für den Verteilungsvergleich wählen",
                 table["Karte"].tolist(),
-                format_func=lambda base: f"{base} – " + str(
-                    table.set_index("Karte").at[base, "Text"]
-                )[:85],
+                format_func=lambda base: f"{base} – {card_texts[base]}",
+                width="stretch",
+                key="vergleich_karte",
             )
+            # Sehr lange Texte bleiben unabhängig von der Dropdown-Darstellung lesbar.
+            st.caption(f"**Kartentext:** {card_texts[selected_id]}")
             counts1 = level_counts(r1[r1["basis_id"].eq(selected_id)])
             counts2 = level_counts(r2[r2["basis_id"].eq(selected_id)])
             n1, n2 = int(counts1.sum()), int(counts2.sum())
@@ -431,11 +591,19 @@ def main():
             frequencies.index.name = "Niveau"
             st.write(f"**{selected_id}** – {n1} Einzelurteile / {n2} Gruppenurteile")
             st.bar_chart(frequencies)
-            st.dataframe(pd.DataFrame({
+            frequencies_count = pd.DataFrame({
                 "Niveau": LEVELS,
                 "R1: Anzahl": counts1.tolist(),
                 "R2: Anzahl": counts2.tolist(),
-            }), hide_index=True)
+            })
+            st.dataframe(
+                frequencies_count,
+                hide_index=True,
+                use_container_width=True,
+                column_config=column_tooltips(
+                    frequencies_count, FREQUENCY_COLUMN_HELP
+                ),
+            )
             st.caption(
                 "Medianposition: Pre-A1=0, A1=1, A2=2, B1=3, B2=4. "
                 "Positive Δ-Werte stehen für tendenziell höhere Gruppeneinstufungen. "
@@ -490,7 +658,12 @@ def main():
                         group_table if chosen == "Alle Gruppen"
                         else group_table[group_table["Gruppe"].eq(chosen)]
                     )
-                    st.dataframe(current, hide_index=True, use_container_width=True)
+                    st.dataframe(
+                        current,
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config=column_tooltips(current, GROUP_COLUMN_HELP),
+                    )
                     download_csv(
                         "📥 Gruppenvergleich als CSV", group_table,
                         "lesen_rundenvergleich_gruppen.csv", key="download_gruppen"
@@ -513,7 +686,14 @@ def main():
                         summary["Ø Anteil vorher gleicher Einzelurteile %"].round(1)
                     )
                     st.subheader("Zusammenfassung nach Gruppen")
-                    st.dataframe(summary, hide_index=True, use_container_width=True)
+                    st.dataframe(
+                        summary,
+                        hide_index=True,
+                        use_container_width=True,
+                        column_config=column_tooltips(
+                            summary, GROUP_SUMMARY_HELP
+                        ),
+                    )
                     st.caption(
                         "Die Prozentwerte verwenden pro Gruppenentscheidung nur die "
                         "verfügbaren Einzelurteile der zugeordneten Mitglieder. "
