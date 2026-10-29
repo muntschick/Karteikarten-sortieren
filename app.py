@@ -2887,9 +2887,9 @@ st.write(
 )
 
 participant_id = st.text_input(
-    "Teilnehmer:innen-ID",
+    "KompChin-ID",
     key="participant_id",
-    placeholder="Bitte Initialien angeben",
+    placeholder="Bitte ID angeben",
     help=(
         "Bitte keine Namen eingeben, "
         "wenn eine pseudonyme ID ausreicht."
