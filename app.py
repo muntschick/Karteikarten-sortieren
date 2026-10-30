@@ -1036,6 +1036,7 @@ def render_admin_dashboard(rows):
         tab_overview,
         tab_submissions,
         tab_cards,
+        tab_individual,
         tab_raters,
         tab_reliability,
         tab_confidence,
@@ -1044,6 +1045,7 @@ def render_admin_dashboard(rows):
             "📌 Überblick",
             "🧾 Abgaben",
             "🗂️ Kartenanalyse",
+            "📊 Einzelanalyse",
             "👥 Bewerter:innen",
             "📐 Reliabilität",
             "❗ Sicherheitsanalyse",
@@ -1325,7 +1327,78 @@ def render_admin_dashboard(rows):
         
         **Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; Sicher % und Unsicher % beziehen sich nur auf Bewertungen mit ausdrücklicher Sicherheitsangabe (! oder ?). Ohne Angabe wird separat gezählt; ohne explizite Angaben bleiben die Quoten leer.
         """)
+    # 4. Einzelanalyse
+    with tab_individual:
 
+        st.subheader("Einzelanalyse der Karten")
+
+        st.caption(
+            "Verteilung der abgegebenen Niveaueinstufungen "
+            "für jede einzelne Karte. "
+            "Dargestellt werden ausschließlich die Bewertungen "
+            "der Teilnehmenden."
+        )
+
+        ordered_card_ids = sorted(
+            CARDS,
+            key=lambda card_id: CARD_METADATA[card_id]["sort_order"]
+        )
+
+        for card_id in ordered_card_ids:
+
+            card_text = CARDS[card_id]
+
+            # Bewertungen für diese Karte
+            card_ratings = raw_df.loc[
+                raw_df["card_id"] == card_id,
+                "participant_level"
+            ]
+
+            # Stimmen pro Niveau zählen
+            counts = (
+                card_ratings
+                .value_counts()
+                .reindex(LEVELS, fill_value=0)
+            )
+
+            total_votes = int(counts.sum())
+
+            # Diagrammdaten
+            chart_df = pd.DataFrame({
+                "Niveau": LEVELS,
+                "Stimmen": [
+                    int(counts[level])
+                    for level in LEVELS
+                ]
+            })
+
+            # Einzelkarte darstellen
+            with st.container(border=True):
+
+                st.markdown(f"### {card_id}")
+
+                st.write(card_text)
+
+                st.caption(
+                    f"Abgegebene Bewertungen: {total_votes}"
+                )
+
+                if total_votes == 0:
+                    st.info(
+                        "Für diese Karte liegen noch keine Bewertungen vor."
+                    )
+
+                else:
+                    st.bar_chart(
+                        chart_df,
+                        x="Niveau",
+                        y="Stimmen",
+                        height=250,
+                        use_container_width=True,
+                        x_label="Sprachniveau",
+                        y_label="Anzahl der Stimmen"
+                    )
+                    
     # Gesamtreliabilität
     with tab_reliability:
         st.subheader("Übereinstimmung zwischen den Rater:innen")
