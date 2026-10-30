@@ -1393,6 +1393,7 @@ def render_admin_dashboard(rows):
                         chart_df,
                         x="Niveau",
                         y="Stimmen",
+                        sort=False,
                         height=250,
                         use_container_width=True,
                         x_label="Sprachniveau",
