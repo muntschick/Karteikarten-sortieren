@@ -6,21 +6,19 @@ Optional kann VERGLEICH_PROFICIENCY den Wert für diese App überschreiben.
 Die zweite Runde heißt automatisch "Lesen Runde 2", "Hören Runde 2" usw.
 Die App liest die vorhandenen Tabellen nur aus; sie schreibt keine Daten in die Datenbank.
 
-Optionale tabgetrennte Gruppen-CSV/TSV (UTF-8), eine Zeile pro Mitglied:
-    group_id\tparticipant_id
-    G01, Teilgruppe; A\tP001
-    G01, Teilgruppe; A\tP002
-    G02\tP003
+Die Gruppenzuordnung wird automatisch aus public.group_memberships geladen:
+    group_id, participant_id, proficiency
 
 'group_id' ist die in Runde 2 eingegebene Teilnehmer:innen-ID (Gruppen-ID).
 'participant_id' ist die individuelle Teilnehmer:innen-ID aus Runde 1.
+'proficiency' ist die Grundkompetenz (z. B. "Lesen", nicht "Lesen Runde 2").
+Wenn keine passenden Gruppenzuordnungen vorliegen, werden keine Gruppenauswertungen angezeigt.
 """
 
 from __future__ import annotations
 
 import hmac
 import html
-import io
 from collections import Counter
 
 import altair as alt
@@ -79,7 +77,7 @@ FREQUENCY_COLUMN_HELP = {
 GROUP_COLUMN_HELP = {
     "Gruppe": "Gruppenkennung aus Runde 2 (dort als Teilnehmer:innen-ID verwendet).",
     "Karte": "Gemeinsame Karten-ID für beide Erhebungsrunden.",
-    "Mitglieder laut Liste": "Anzahl der Personen, die in der hochgeladenen Gruppen-CSV dieser Gruppe zugeordnet sind.",
+    "Mitglieder in Gruppe": "Anzahl der Personen, die laut Datenbank dieser Gruppe zugeordnet sind.",
     "Einzelurteile R1 verfügbar": "Anzahl dieser Gruppenmitglieder mit einer vorhandenen Einzelbewertung für die Karte.",
     "Modalniveau der Mitglieder R1": "Häufigste frühere Einstufung unter den verfügbaren Einzelurteilen dieser Gruppe.",
     "Gruppenentscheidung R2": "Von der Gruppe gemeinsam vergebene Niveaustufe in Runde 2.",
@@ -350,32 +348,39 @@ def r2_to_r1_compare(good_pairs, r1, r2):
     return result_df
 
 
-def load_membership(file):
-    try:
-        # Explizit TAB als Trennzeichen verwenden: Kommata und Semikolons
-        # sind reguläre Bestandteile von Gruppenkennungen.
-        membership = pd.read_csv(
-            io.BytesIO(file.getvalue()),
-            sep="\t",
-            encoding="utf-8-sig",
-            dtype=str,
-            keep_default_na=False,
-        )
-    except (ValueError, pd.errors.ParserError, UnicodeError) as exc:
-        raise ValueError("Die tabgetrennte Gruppen-CSV/TSV konnte nicht eingelesen werden.") from exc
-    membership.columns = [str(x).strip().lstrip("\ufeff") for x in membership.columns]
-    if not {"group_id", "participant_id"}.issubset(membership.columns):
-        raise ValueError("Erforderliche tabgetrennte Spalten: group_id und participant_id (getrennt durch TAB).")
-    membership = membership[["group_id", "participant_id"]].dropna().copy()
-    for col in ("group_id", "participant_id"):
-        membership[col] = membership[col].astype(str).str.strip()
-    membership = membership[
-        membership["group_id"].ne("") & membership["participant_id"].ne("")
-    ].drop_duplicates()
-    if membership.empty:
-        raise ValueError("Die Gruppen-CSV enthält keine gültigen Zuordnungen.")
-    return membership
+@st.cache_data(ttl=60)
+def load_membership_from_db(proficiency: str) -> pd.DataFrame:
+    """Gruppenmitglieder einer Kompetenz direkt aus PostgreSQL laden.
 
+    Jede Zeile ist eine Mitgliedschaft (Gruppe, Person, Grundkompetenz).
+    Ein leerer Rückgabewert bedeutet: keine Gruppenanalyse verfügbar.
+    """
+    with psycopg.connect(
+        str(st.secrets["DATABASE_URL"]),
+        sslmode="require",
+        connect_timeout=10,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT group_id, participant_id
+                  FROM public.group_memberships
+                 WHERE proficiency = %s
+                 ORDER BY group_id, participant_id
+                """,
+                (proficiency,),
+            )
+            rows = cur.fetchall()
+
+    membership = pd.DataFrame(rows, columns=["group_id", "participant_id"])
+    if not membership.empty:
+        # Wie beim bisherigen TSV-Upload: Rand-Leerzeichen bereinigen.
+        for name in ("group_id", "participant_id"):
+            membership[name] = membership[name].astype(str).str.strip()
+        membership = membership[
+            membership["group_id"].ne("") & membership["participant_id"].ne("")
+        ].drop_duplicates()
+    return membership
 
 def build_group_comparison(membership, r1, r2, allowed_ids):
     """R2-Gruppenentscheidung vs. deren MITGLIEDER-Einzelurteile aus R1.
@@ -408,7 +413,7 @@ def build_group_comparison(membership, r1, r2, allowed_ids):
         result.append({
             "Gruppe": group_id,
             "Karte": row.basis_id,
-            "Mitglieder laut Liste": count_members[group_id],
+            "Mitglieder in Gruppe": count_members[group_id],
             "Einzelurteile R1 verfügbar": len(prior_levels),
             "Modalniveau der Mitglieder R1": " / ".join(modal),
             "Gruppenentscheidung R2": row.level,
@@ -491,6 +496,7 @@ def main():
     )
     if st.button("Daten neu laden"):
         load_from_db.clear()
+        load_membership_from_db.clear()
         st.rerun()
 
     try:
@@ -529,107 +535,108 @@ def main():
         raw_export["basis_id"].isin(set(good_pairs["basis_id"]))
     )
 
-    # Die optionalen Gruppenexporte werden nur nach erfolgreichem Upload angeboten.
+    # Gruppenauswertungen nur, wenn in PostgreSQL Mitgliedschaften existieren.
+    # Die Downloads werden weiterhin ausschließlich in der Übersicht angezeigt.
     group_table = None
     summary = None
 
     with tab_groups:
         st.write(
-            "Optional lässt sich jede Gruppenentscheidung aus Runde 2 mit den "
-            "früheren Einzelurteilen **der Mitglieder genau dieser Gruppe** vergleichen. "
-            "Dafür wird eine Zuordnungstabelle benötigt."
+            "Die Gruppenentscheidungen aus Runde 2 werden mit den früheren "
+            "Einzelurteilen der zugehörigen Mitglieder aus Runde 1 verglichen. "
+            "Die Gruppenzuordnung wird automatisch aus der Datenbank geladen."
         )
-        st.code(
-            "group_id\tparticipant_id\n"
-            "Gruppe A, Teil 1; Team Nord\tP001\n"
-            "Gruppe A, Teil 1; Team Nord\tP002\n"
-            "Gruppe B; Team Süd, 2\tP003",
-            language="text",
-        )
-        st.caption(
-            "group_id = in Runde 2 als Teilnehmer:innen-ID eingegebene Gruppenkennung; "
-            "participant_id = individuelle Kennung aus Runde 1. "
-            "Eine Zeile pro Gruppenmitglied; keine echten Namen nötig. "
-            "Die zwei Spalten müssen durch einen Tabulator (TAB) getrennt sein; "
-            "Kommata und Semikolons innerhalb der Gruppen-ID bleiben erhalten."
-        )
-        upload = st.file_uploader(
-            "Gruppenzuordnung (tabgetrennte CSV/TSV) hochladen",
-            type=["csv", "tsv", "txt"],
-        )
-        if upload is not None:
-            try:
-                membership = load_membership(upload)
-                group_ids = set(r2["participant_id"].dropna())
-                person_ids = set(r1["participant_id"].dropna())
-                unknown_groups = sorted(set(membership["group_id"]) - group_ids)
-                unknown_people = sorted(set(membership["participant_id"]) - person_ids)
-                missing_groups = sorted(group_ids - set(membership["group_id"]))
-                if unknown_groups:
-                    st.warning("Gruppen ohne R2-Abgabe: " + ", ".join(unknown_groups))
-                if unknown_people:
-                    st.warning("Mitglieds-IDs ohne R1-Abgabe: " + ", ".join(unknown_people))
-                if missing_groups:
-                    st.warning("R2-Gruppen ohne Mitgliederliste: " + ", ".join(missing_groups))
-                repeated = membership.groupby("participant_id")["group_id"].nunique()
-                if repeated.gt(1).any():
-                    st.warning("Mindestens eine Person ist mehreren Gruppen zugeordnet.")
+        try:
+            membership = load_membership_from_db(BASE_PROFICIENCY)
+        except psycopg.Error as exc:
+            print("Datenbankfehler beim Laden der Gruppenzuordnung:", repr(exc))
+            st.error(
+                "Die Gruppenzuordnung konnte nicht geladen werden. "
+                "Bitte prüfen, ob public.group_memberships existiert "
+                "und die Datenbankverbindung Leserechte besitzt."
+            )
+            membership = pd.DataFrame(columns=["group_id", "participant_id"])
 
-                group_table = build_group_comparison(
-                    membership, r1, r2, set(good_pairs["basis_id"])
+        if membership.empty:
+            st.info(
+                f"Keine Gruppenzuordnungen für {BASE_PROFICIENCY!r} in der "
+                "Datenbank vorhanden. Deshalb werden hier keine "
+                "Gruppenauswertungen angezeigt."
+            )
+        else:
+            st.caption(
+                f"{len(membership)} Mitgliedschaften für "
+                f"{BASE_PROFICIENCY} aus public.group_memberships geladen."
+            )
+            group_ids = set(r2["participant_id"].dropna())
+            person_ids = set(r1["participant_id"].dropna())
+            unknown_groups = sorted(set(membership["group_id"]) - group_ids)
+            unknown_people = sorted(set(membership["participant_id"]) - person_ids)
+            missing_groups = sorted(group_ids - set(membership["group_id"]))
+            if unknown_groups:
+                st.warning("Gruppen ohne R2-Abgabe: " + ", ".join(unknown_groups))
+            if unknown_people:
+                st.warning("Mitglieds-IDs ohne R1-Abgabe: " + ", ".join(unknown_people))
+            if missing_groups:
+                st.warning("R2-Gruppen ohne Mitgliederzuordnung: " + ", ".join(missing_groups))
+            repeated = membership.groupby("participant_id")["group_id"].nunique()
+            if repeated.gt(1).any():
+                st.warning("Mindestens eine Person ist mehreren Gruppen zugeordnet.")
+
+            group_table = build_group_comparison(
+                membership, r1, r2, set(good_pairs["basis_id"])
+            )
+            if group_table.empty:
+                st.info("Keine passenden Gruppenentscheidungen und Einzelurteile gefunden.")
+            else:
+                group_names = sorted(group_table["Gruppe"].unique().tolist())
+                chosen = st.selectbox("Gruppe anzeigen", ["Alle Gruppen", *group_names])
+                current = (
+                    group_table if chosen == "Alle Gruppen"
+                    else group_table[group_table["Gruppe"].eq(chosen)]
                 )
-                if group_table.empty:
-                    st.info("Keine passenden Gruppenentscheidungen und Einzelurteile gefunden.")
-                else:
-                    group_names = sorted(group_table["Gruppe"].unique().tolist())
-                    chosen = st.selectbox("Gruppe anzeigen", ["Alle Gruppen", *group_names])
-                    current = (
-                        group_table if chosen == "Alle Gruppen"
-                        else group_table[group_table["Gruppe"].eq(chosen)]
+                st.dataframe(
+                    current,
+                    hide_index=True,
+                    use_container_width=True,
+                    height=card_table_height(len(current)),
+                    column_config=column_tooltips(current, GROUP_COLUMN_HELP),
+                )
+                summary = (
+                    group_table.groupby("Gruppe", as_index=False)
+                    .agg(
+                        **{
+                            "Verglichene Karten": ("Karte", "nunique"),
+                            "Ø Anteil vorher gleicher Einzelurteile %": (
+                                "Anteil vorher gleicher Einzelurteile %", "mean"
+                            ),
+                            "Entscheidungen, die zuvor kein Mitglied wählte": (
+                                "In R1 von keinem Mitglied gewählt", "sum"
+                            ),
+                        }
                     )
-                    st.dataframe(
-                        current,
-                        hide_index=True,
-                        use_container_width=True,
-                        height=card_table_height(len(current)),
-                        column_config=column_tooltips(current, GROUP_COLUMN_HELP),
-                    )
-                    summary = (
-                        group_table.groupby("Gruppe", as_index=False)
-                        .agg(
-                            **{
-                                "Verglichene Karten": ("Karte", "nunique"),
-                                "Ø Anteil vorher gleicher Einzelurteile %": (
-                                    "Anteil vorher gleicher Einzelurteile %", "mean"
-                                ),
-                                "Entscheidungen, die zuvor kein Mitglied wählte": (
-                                    "In R1 von keinem Mitglied gewählt", "sum"
-                                ),
-                            }
-                        )
-                    )
-                    summary["Ø Anteil vorher gleicher Einzelurteile %"] = (
-                        summary["Ø Anteil vorher gleicher Einzelurteile %"].round(1)
-                    )
-                    st.subheader("Zusammenfassung nach Gruppen")
-                    st.dataframe(
-                        summary,
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config=column_tooltips(
-                            summary, GROUP_SUMMARY_HELP
-                        ),
-                    )
-                    st.info("Die CSV-Downloads für Gruppenvergleich und Gruppenzusammenfassung befinden sich im Reiter **Übersicht**.")
-                    st.caption(
-                        "Die Prozentwerte verwenden pro Gruppenentscheidung nur die "
-                        "verfügbaren Einzelurteile der zugeordneten Mitglieder. "
-                        "Sie zeigen, ob die spätere Gruppenentscheidung bereits vor "
-                        "der Diskussion vertreten wurde – nicht, welche Person "
-                        "ihre Meinung geändert hat."
-                    )
-            except ValueError as exc:
-                st.error(str(exc))
+                )
+                summary["Ø Anteil vorher gleicher Einzelurteile %"] = (
+                    summary["Ø Anteil vorher gleicher Einzelurteile %"].round(1)
+                )
+                st.subheader("Zusammenfassung nach Gruppen")
+                st.dataframe(
+                    summary,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config=column_tooltips(summary, GROUP_SUMMARY_HELP),
+                )
+                st.info(
+                    "Die CSV-Downloads für Gruppenvergleich und "
+                    "Gruppenzusammenfassung befinden sich im Reiter **Übersicht**."
+                )
+                st.caption(
+                    "Die Prozentwerte verwenden pro Gruppenentscheidung nur die "
+                    "verfügbaren Einzelurteile der zugeordneten Mitglieder. "
+                    "Sie zeigen, ob die spätere Gruppenentscheidung bereits vor "
+                    "der Diskussion vertreten wurde – nicht, welche Person "
+                    "ihre Meinung geändert hat."
+                )
 
     with tab_overview:
         st.subheader("Überblick über beide Runden")
@@ -670,9 +677,8 @@ def main():
         st.markdown("**Gruppenbezogene Auswertungen**")
         if group_table is None or group_table.empty:
             st.info(
-                "Für Gruppen-Downloads zuerst im Reiter ‚Gruppenvergleich‘ "
-                "eine tabgetrennte Gruppenzuordnung hochladen. "
-                "Danach erscheinen die Downloads hier."
+                "Keine Gruppen-Downloads verfügbar: Es liegen keine passenden "
+                "Gruppenzuordnungen und Gruppenbewertungen in der Datenbank vor."
             )
         else:
             export_3, export_4 = st.columns(2)
