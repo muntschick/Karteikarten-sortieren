@@ -3,7 +3,7 @@
 Start: streamlit run rundenvergleich_app.py
 Secrets: DATABASE_URL, ADMIN_CODE, APP_PROFICIENCY = "gewünschte_Fertigkeit".
 Optional kann VERGLEICH_PROFICIENCY den Wert für diese App überschreiben.
-Die jeweils zweite Runde heißt automatisch "Lesen Runde 2" bzw. "Schreiben Runde 2".
+Die zweite Runde heißt automatisch "Lesen Runde 2", "Hören Runde 2" usw.
 Die App liest die vorhandenen Tabellen nur aus; sie schreibt keine Daten in die Datenbank.
 
 Optionale Gruppen-CSV (UTF-8), eine Zeile pro Mitglied:
@@ -22,6 +22,7 @@ import hmac
 import io
 from collections import Counter
 
+import altair as alt
 import pandas as pd
 import psycopg
 import streamlit as st
@@ -37,9 +38,10 @@ BASE_PROFICIENCY = str(
 ).strip()
 ROUND_1 = BASE_PROFICIENCY
 ROUND_2 = f"{BASE_PROFICIENCY} Runde 2"
-DOWNLOAD_PREFIX = {"Lesen": "lesen", "Schreiben": "schreiben"}.get(
+DOWNLOAD_PREFIX = {"Lesen": "lesen", "Hören": "hoeren", "Schreiben": "schreiben"}.get(
     BASE_PROFICIENCY, "rundenvergleich"
 )
+# Verbindliche Reihenfolge in ALLEN Auswertungen und Diagrammen.
 LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
 POSITION = {level: index for index, level in enumerate(LEVELS)}
 
@@ -464,11 +466,11 @@ def show_quality(r1_cards, r2_cards, pairs, r1, r2):
 
 
 def main():
-    if BASE_PROFICIENCY not in {"Lesen", "Schreiben"}:
+    if BASE_PROFICIENCY not in {"Lesen", "Hören", "Schreiben"}:
         st.error(
             f"Ungültige Kompetenz {BASE_PROFICIENCY!r}. "
             "Bitte APP_PROFICIENCY (oder VERGLEICH_PROFICIENCY) "
-            "auf 'Lesen' oder 'Schreiben' setzen."
+            "auf 'Lesen', 'Hören' oder 'Schreiben' setzen."
         )
         st.stop()
 
@@ -562,17 +564,50 @@ def main():
             counts1 = level_counts(r1[r1["basis_id"].eq(selected_id)])
             counts2 = level_counts(r2[r2["basis_id"].eq(selected_id)])
             n1, n2 = int(counts1.sum()), int(counts2.sum())
+            # Die Niveaus explizit ordnen: Eine automatische alphabetische
+            # Sortierung würde Pre-A1 fälschlich hinter B2 setzen.
             frequencies = pd.DataFrame({
-                "Einzelurteile R1 (%)": 100 * counts1 / n1 if n1 else 0.0,
-                "Gruppenurteile R2 (%)": 100 * counts2 / n2 if n2 else 0.0,
+                "Niveau": LEVELS,
+                "Einzelurteile R1 (%)": (
+                    (100 * counts1 / n1).tolist() if n1 else [0.0] * len(LEVELS)
+                ),
+                "Gruppenurteile R2 (%)": (
+                    (100 * counts2 / n2).tolist() if n2 else [0.0] * len(LEVELS)
+                ),
             })
-            frequencies.index.name = "Niveau"
+            frequency_long = frequencies.melt(
+                id_vars="Niveau", var_name="Runde", value_name="Anteil (%)"
+            )
+            round_order = ["Einzelurteile R1 (%)", "Gruppenurteile R2 (%)"]
+            chart = (
+                alt.Chart(frequency_long)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Niveau:N", sort=LEVELS, title="Niveau"),
+                    xOffset=alt.XOffset("Runde:N", sort=round_order),
+                    y=alt.Y(
+                        "Anteil (%):Q", title="Anteil der Bewertungen (%)",
+                        scale=alt.Scale(domain=[0, 100]),
+                    ),
+                    color=alt.Color(
+                        "Runde:N", sort=round_order, legend=alt.Legend(title="")
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Niveau:N", title="Niveau"),
+                        alt.Tooltip("Runde:N", title="Runde"),
+                        alt.Tooltip("Anteil (%):Q", title="Anteil (%)", format=".1f"),
+                    ],
+                )
+                .properties(height=350)
+            )
             st.write(f"**{selected_id}** – {n1} Einzelurteile / {n2} Gruppenurteile")
-            st.bar_chart(frequencies)
+            st.altair_chart(chart, use_container_width=True)
+
+            # Auch die Tabelle wird stets in der CEFR-Reihenfolge ausgegeben.
             frequencies_count = pd.DataFrame({
                 "Niveau": LEVELS,
-                "R1: Anzahl": counts1.tolist(),
-                "R2: Anzahl": counts2.tolist(),
+                "R1: Anzahl": counts1.reindex(LEVELS).tolist(),
+                "R2: Anzahl": counts2.reindex(LEVELS).tolist(),
             })
             st.dataframe(
                 frequencies_count,
