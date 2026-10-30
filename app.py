@@ -1053,10 +1053,9 @@ def render_admin_dashboard(rows):
     # 1. Überblick
     with tab_overview:
 
-        if st.button("🔄 Refresh from database", use_container_width=True):
+        if st.button("Daten neu laden"):
             load_cards.clear()
             st.rerun()
-
         metric_1, metric_2 = st.columns(2)
         metric_1.metric("Abgaben", number_submissions)
         metric_2.metric("Zuordnungen", number_assignments)
