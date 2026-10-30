@@ -11,7 +11,7 @@ Die Gruppenzuordnung wird automatisch aus public.group_memberships geladen:
 
 'group_id' ist die in Runde 2 eingegebene Teilnehmer:innen-ID (Gruppen-ID).
 'participant_id' ist die individuelle Teilnehmer:innen-ID aus Runde 1.
-'proficiency' ist die Grundkompetenz (z. B. "Lesen", nicht "Lesen Runde 2").
+'proficiency' ist die Grundkompetenz von Runde 2, also z.B. "Lesen Runde 2").
 Wenn keine passenden Gruppenzuordnungen vorliegen, werden keine Gruppenauswertungen angezeigt.
 """
 
@@ -547,7 +547,7 @@ def main():
             "Die Gruppenzuordnung wird automatisch aus der Datenbank geladen."
         )
         try:
-            membership = load_membership_from_db(BASE_PROFICIENCY)
+            membership = load_membership_from_db(ROUND_2)
         except psycopg.Error as exc:
             print("Datenbankfehler beim Laden der Gruppenzuordnung:", repr(exc))
             st.error(
