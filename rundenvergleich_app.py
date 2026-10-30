@@ -560,7 +560,15 @@ def main():
                 key="vergleich_karte",
             )
             # Sehr lange Texte bleiben unabhängig von der Dropdown-Darstellung lesbar.
+            # Vollständigen Kartentext anzeigen
             st.caption(f"**Kartentext:** {card_texts[selected_id]}")
+            
+            # Intendiertes Niveau der ausgewählten Karte anzeigen
+            reference_level = table.loc[
+                table["Karte"] == selected_id, "Referenzniveau"
+            ].iloc[0]
+            
+            st.caption(f"**Intendiertes Niveau:** {reference_level}")
             counts1 = level_counts(r1[r1["basis_id"].eq(selected_id)])
             counts2 = level_counts(r2[r2["basis_id"].eq(selected_id)])
             n1, n2 = int(counts1.sum()), int(counts2.sum())
