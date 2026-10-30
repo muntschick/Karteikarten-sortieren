@@ -6,11 +6,11 @@ Optional kann VERGLEICH_PROFICIENCY den Wert für diese App überschreiben.
 Die zweite Runde heißt automatisch "Lesen Runde 2", "Hören Runde 2" usw.
 Die App liest die vorhandenen Tabellen nur aus; sie schreibt keine Daten in die Datenbank.
 
-Optionale Gruppen-CSV (UTF-8), eine Zeile pro Mitglied:
-    group_id,participant_id
-    G01,P001
-    G01,P002
-    G02,P003
+Optionale tabgetrennte Gruppen-CSV/TSV (UTF-8), eine Zeile pro Mitglied:
+    group_id\tparticipant_id
+    G01, Teilgruppe; A\tP001
+    G01, Teilgruppe; A\tP002
+    G02\tP003
 
 'group_id' ist die in Runde 2 eingegebene Teilnehmer:innen-ID (Gruppen-ID).
 'participant_id' ist die individuelle Teilnehmer:innen-ID aus Runde 1.
@@ -19,6 +19,7 @@ Optionale Gruppen-CSV (UTF-8), eine Zeile pro Mitglied:
 from __future__ import annotations
 
 import hmac
+import html
 import io
 from collections import Counter
 
@@ -351,13 +352,20 @@ def r2_to_r1_compare(good_pairs, r1, r2):
 
 def load_membership(file):
     try:
-        membership = pd.read_csv(io.BytesIO(file.getvalue()), sep=None,
-                                 engine="python", dtype=str)
+        # Explizit TAB als Trennzeichen verwenden: Kommata und Semikolons
+        # sind reguläre Bestandteile von Gruppenkennungen.
+        membership = pd.read_csv(
+            io.BytesIO(file.getvalue()),
+            sep="\t",
+            encoding="utf-8-sig",
+            dtype=str,
+            keep_default_na=False,
+        )
     except (ValueError, pd.errors.ParserError, UnicodeError) as exc:
-        raise ValueError("Die Gruppen-CSV konnte nicht eingelesen werden.") from exc
+        raise ValueError("Die tabgetrennte Gruppen-CSV/TSV konnte nicht eingelesen werden.") from exc
     membership.columns = [str(x).strip().lstrip("\ufeff") for x in membership.columns]
     if not {"group_id", "participant_id"}.issubset(membership.columns):
-        raise ValueError("Erforderliche Spalten: group_id,participant_id")
+        raise ValueError("Erforderliche tabgetrennte Spalten: group_id und participant_id (getrennt durch TAB).")
     membership = membership[["group_id", "participant_id"]].dropna().copy()
     for col in ("group_id", "participant_id"):
         membership[col] = membership[col].astype(str).str.strip()
@@ -559,16 +567,20 @@ def main():
                 width="stretch",
                 key="vergleich_karte",
             )
-            # Sehr lange Texte bleiben unabhängig von der Dropdown-Darstellung lesbar.
-            # Vollständigen Kartentext anzeigen
-            st.caption(f"**Kartentext:** {card_texts[selected_id]}")
-            
-            # Intendiertes Niveau der ausgewählten Karte anzeigen
-            reference_level = table.loc[
-                table["Karte"] == selected_id, "Referenzniveau"
+            # Kartentext und intendiertes Niveau gut lesbar in Schwarz zeigen.
+            # html.escape verhindert, dass Datenbanktexte als HTML interpretiert werden.
+            intended_level = table.loc[
+                table["Karte"].eq(selected_id), "Referenzniveau"
             ].iloc[0]
-            
-            st.caption(f"**Intendiertes Niveau:** {reference_level}")
+            st.markdown(
+                '<div style="background:#ffffff; color:#000000; '
+                'padding:10px 14px; border-radius:6px; margin-bottom:12px;">'
+                f'<div><strong>Kartentext:</strong> {html.escape(str(card_texts[selected_id]))}</div>'
+                f'<div style="margin-top:5px;"><strong>Intendiertes Niveau:</strong> '
+                f'{html.escape(str(intended_level))}</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
             counts1 = level_counts(r1[r1["basis_id"].eq(selected_id)])
             counts2 = level_counts(r2[r2["basis_id"].eq(selected_id)])
             n1, n2 = int(counts1.sum()), int(counts2.sum())
@@ -640,15 +652,23 @@ def main():
             "Dafür wird eine Zuordnungstabelle benötigt."
         )
         st.code(
-            "group_id,participant_id\nG01,P001\nG01,P002\nG01,P003\nG02,P004\nG02,P005",
-            language="csv",
+            "group_id\tparticipant_id\n"
+            "Gruppe A, Teil 1; Team Nord\tP001\n"
+            "Gruppe A, Teil 1; Team Nord\tP002\n"
+            "Gruppe B; Team Süd, 2\tP003",
+            language="text",
         )
         st.caption(
             "group_id = in Runde 2 als Teilnehmer:innen-ID eingegebene Gruppenkennung; "
             "participant_id = individuelle Kennung aus Runde 1. "
-            "Eine Zeile pro Gruppenmitglied; keine echten Namen nötig."
+            "Eine Zeile pro Gruppenmitglied; keine echten Namen nötig. "
+            "Die zwei Spalten müssen durch einen Tabulator (TAB) getrennt sein; "
+            "Kommata und Semikolons innerhalb der Gruppen-ID bleiben erhalten."
         )
-        upload = st.file_uploader("Gruppenzuordnung (CSV) hochladen", type=["csv"])
+        upload = st.file_uploader(
+            "Gruppenzuordnung (tabgetrennte CSV/TSV) hochladen",
+            type=["csv", "tsv", "txt"],
+        )
         if upload is not None:
             try:
                 membership = load_membership(upload)
