@@ -618,7 +618,7 @@ def build_card_analysis(raw_df):
 
     ordered_card_ids = sorted(
         CARDS,
-        key=lambda card_id: CARD_METADATA[card_id]["sort_order"],
+        key=lambda card_id: int(card_id[-2:])
     )
 
     for card_id in ordered_card_ids:
