@@ -703,6 +703,7 @@ def main():
                         current,
                         hide_index=True,
                         use_container_width=True,
+                        height=card_table_height(len(current)),
                         column_config=column_tooltips(current, GROUP_COLUMN_HELP),
                     )
                     download_csv(
