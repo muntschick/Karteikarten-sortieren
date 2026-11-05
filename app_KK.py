@@ -982,7 +982,9 @@ def render_admin_dashboard(rows, all_proficiencies=None):
     )
 
     with tab_comparison:
-        render_proficiency_comparison(all_proficiencies or [APP_PROFICIENCY])
+        comparison_overview, comparison_rows = render_proficiency_comparison(
+            all_proficiencies or [APP_PROFICIENCY]
+        )
 
     # 1. Überblick
     with tab_overview:
@@ -1007,6 +1009,26 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         st.divider()
         st.subheader("Downloads")
 
+        st.markdown("**Alle Fertigkeiten**")
+        comparison_col_1, comparison_col_2 = st.columns(2)
+        with comparison_col_1:
+            st.download_button(
+                "📥 Alle Abgaben als CSV",
+                data=create_results_csv(comparison_rows),
+                file_name="alle_fertigkeiten_rohdaten.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with comparison_col_2:
+            st.download_button(
+                "📥 Fertigkeitenvergleich als CSV",
+                data=comparison_overview.to_csv(index=False).encode("utf-8-sig"),
+                file_name="fertigkeitenvergleich.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+        st.markdown(f"**Detailauswertung: {APP_PROFICIENCY}**")
         raw_csv = create_results_csv(rows)
         analysis_csv = (
             card_analysis_df
@@ -3149,13 +3171,7 @@ def render_proficiency_comparison(proficiencies):
                "Die Abgabenzahlen werden unabhängig von den Zuordnungen gezählt.")
     if not raw_df.empty:
         st.bar_chart(overview.set_index("Fertigkeit")[["Abgaben"]])
-    st.download_button("📥 Alle Abgaben als CSV", data=create_results_csv(rows),
-                       file_name="alle_fertigkeiten_rohdaten.csv", mime="text/csv",
-                       use_container_width=True)
-    st.download_button("📥 Fertigkeitenvergleich als CSV",
-                       data=overview.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="fertigkeitenvergleich.csv", mime="text/csv",
-                       use_container_width=True)
+    return overview, rows
 
 
 def render_central_admin():
