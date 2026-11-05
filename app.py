@@ -2264,6 +2264,7 @@ COMPONENT_HTML = r"""
     let lastParticipantId = "";
     let lastStorageAction = "";
     let firstRender = true;
+    let shouldSaveInitial = false;
     let lastReportedHeight = 0;
 
 
@@ -2342,89 +2343,61 @@ COMPONENT_HTML = r"""
     let confidenceValues = {};
     let currentConfidenceJson = "";
 
-    // Schreibe in den First-Party-Speicher der Streamlit-Hauptseite.
-    // Iframe-localStorage ist nur Fallback für ältere bereits gespeicherte Entwürfe.
+    // Einzige Speicherquelle: sessionStorage der Hauptseite.
+    // Übersteht ein Neuladen, wird beim normalen Schließen des Tabs verworfen.
     let storageRequestNumber = 0;
     const pendingStorageRequests = new Map();
 
-    function requestParentStorage(action, key, value = null) {
+    function requestTabStorage(action, key, value = null) {
         return new Promise((resolve) => {
             const requestId = ++storageRequestNumber;
             const timeout = window.setTimeout(() => {
                 pendingStorageRequests.delete(requestId);
-                resolve({success: false, timeout: true, value: null});
-            }, 1800);
+                resolve({success: false, value: null});
+            }, 2000);
             pendingStorageRequests.set(requestId, (result) => {
                 window.clearTimeout(timeout);
                 resolve(result);
             });
             window.parent.postMessage({
-                type: "kompchin:draft-request-v2", action, key, value, requestId
+                type: "kompchin:tab-storage", action, key, value, requestId
             }, "*");
         });
     }
 
     window.addEventListener("message", (event) => {
-        if (event.source !== window.parent ||
-            !event.data || event.data.type !== "kompchin:draft-response-v2") return;
+        if (event.source !== window.parent || !event.data ||
+            event.data.type !== "kompchin:tab-storage-response") return;
         const done = pendingStorageRequests.get(event.data.requestId);
         if (!done) return;
         pendingStorageRequests.delete(event.data.requestId);
         done(event.data);
     });
 
-    function readLegacyDraft(key) {
-        try { return window.localStorage.getItem(key); }
-        catch (error) { return null; }
-    }
-
-    // Bei einem Reload kann die Streamlit-Hauptseite ihren Listener erst
-    // nach dem iframe bereitstellen. Deshalb mehrfach lesen statt nach nur
-    // einem Timeout vorschnell einen leeren Startzustand zu verwenden.
     async function loadStoredDraft(key) {
-        const legacy = readLegacyDraft(key);
-        for (let attempt = 0; attempt < 4; attempt++) {
-            const response = await requestParentStorage("get", key);
-            if (response.success) {
-                if (response.value) {
-                    // Die zuletzt verwendete Kopie auch im iframe vorhalten.
-                    try { window.localStorage.setItem(key, response.value); }
-                    catch (error) {}
-                    return response.value;
-                }
-                // Ein erfolgreich erreichter Hauptspeicher ist maßgeblich.
-                // Ein alter iframe-Entwurf darf ihn NICHT wieder überschreiben.
-                return null;
-            }
-            if (attempt < 3) {
-                await new Promise(resolve => window.setTimeout(resolve, 300));
-            }
+        // Der Listener der Hauptseite kann nach dem iframe starten.
+        // Vor der Antwort keinesfalls den leeren Anfangszustand speichern.
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const result = await requestTabStorage("get", key);
+            if (result.success) return result.value;
+            await new Promise(resolve => window.setTimeout(resolve, 300));
         }
-        return legacy;
+        console.warn("Autosave: Sitzungsspeicher der Hauptseite nicht erreichbar");
+        return null;
     }
 
-    function clearStoredDraft(key, removeId = false) {
-        requestParentStorage("remove", key);
-        if (removeId) requestParentStorage("remove", key + "_participant_id");
-        try { window.localStorage.removeItem(key); } catch (error) {}
+    function clearStoredDraft(key) {
+        requestTabStorage("remove", key);
     }
 
     function saveDraft() {
         if (!autosaveReady || !autosaveKey) return;
-        const draft = JSON.stringify({
+        requestTabStorage("set", autosaveKey, JSON.stringify({
             version: 1,
             board: readBoard(),
             confidence: confidenceValues,
             participant_id: lastParticipantId
-        });
-        // Wichtig: Beide Speicherorte bei JEDER Änderung aktualisieren.
-        // Der iframe-Speicher rettet Reloads, wenn die Hauptseite noch nicht
-        // bereit ist; der Hauptseitenspeicher rettet neue Tabs.
-        try { window.localStorage.setItem(autosaveKey, draft); }
-        catch (error) { console.warn("Iframe-Autosave nicht verfügbar", error); }
-        requestParentStorage("set", autosaveKey, draft).then((result) => {
-            if (!result.success) console.warn("Hauptseiten-Autosave nicht erreichbar");
-        });
+        }));
     }
 
     function reportState() {
@@ -2812,10 +2785,10 @@ COMPONENT_HTML = r"""
             lastParticipantId = participantId;
             lastStorageAction = actionId;
             autosaveReady = false;
+            shouldSaveInitial = true;
 
             if (action === "clear" || action === "reset") {
-                await requestParentStorage("remove", key);
-                clearStoredDraft(key, action === "clear");
+                clearStoredDraft(key);
             } else if (key) {
                 const raw = await loadStoredDraft(key);
                 if (raw) {
@@ -2824,6 +2797,7 @@ COMPONENT_HTML = r"""
                         if (saved.version === 1 && Array.isArray(saved.board)
                             && saved.confidence && typeof saved.confidence === "object") {
                             autosaveReady = true;
+                            shouldSaveInitial = false;
                             // Gespeicherte Karten sofort anzeigen; Python
                             // übernimmt den Zustand im folgenden Rerun.
                             confidenceValues = {...saved.confidence};
@@ -2847,7 +2821,7 @@ COMPONENT_HTML = r"""
         } else if (actionId && actionId !== lastStorageAction) {
             lastStorageAction = actionId;
             if (action === "clear" || action === "reset") {
-                clearStoredDraft(key, action === "clear");
+                clearStoredDraft(key);
             }
         }
 
@@ -2859,9 +2833,7 @@ COMPONENT_HTML = r"""
 
         if (lastParticipantId !== participantId) {
             lastParticipantId = participantId;
-            // Die ID wird bei einem Streamlit-Widget-Update ebenfalls gesichert.
-            // Im ersten Render vor der Wiederherstellung wird nie gespeichert.
-            if (currentBoardJson) saveDraft();
+            // Das Eingabefeld wird unabhängig vom Karten-Board gesichert.
         }
 
         const board =
@@ -2892,7 +2864,11 @@ COMPONENT_HTML = r"""
         } else {
             updateFrameHeight();
         }
-        if (action === "reset") saveDraft();
+        // Auch ohne verschobene Karten einen Entwurf für die ID anlegen.
+        if (shouldSaveInitial) {
+            shouldSaveInitial = false;
+            saveDraft();
+        }
     }
 
 
@@ -2970,44 +2946,33 @@ _card_sorter_component = (
 
 
 def render_autosave_storage_bridge():
-    """Browser-Speicher der Hauptseite statt potenziell flüchtigen Iframe-Speichers.
-
-    Benötigt Streamlit >= 1.52 (st.html(..., unsafe_allow_javascript=True)).
-    """
+    """Tabgebundener Autosave über sessionStorage der Streamlit-Hauptseite."""
     st.html(r"""
 <script>
 (() => {
-    if (window.__kompchinAutosaveBridgeV2) return;
-    window.__kompchinAutosaveBridgeV2 = true;
-    // ID direkt aus dem sichtbaren Textfeld sichern (auch vor Enter).
-    // Das verhindert, dass eine spätere Karten-Rückmeldung eine alte ID schreibt.
-    const currentDraftKey = __DRAFT_KEY__;
-    const idStorageKey = currentDraftKey + "_participant_id";
-    const syncParticipantInput = (event) => {
+    if (window.__kompchinTabStorage) return;
+    window.__kompchinTabStorage = true;
+    const key = __DRAFT_KEY__;
+
+    // Änderungen an der KompChin-ID unmittelbar sichern, nicht erst bei Enter.
+    document.addEventListener("input", (event) => {
         const input = event.target;
         if (!(input instanceof HTMLInputElement) ||
             input.getAttribute("aria-label") !== "KompChin-ID") return;
         try {
-            localStorage.setItem(idStorageKey, input.value);
-            const raw = localStorage.getItem(currentDraftKey);
-            if (raw) {
-                const draft = JSON.parse(raw);
-                if (draft && draft.version === 1) {
-                    draft.participant_id = input.value;
-                    localStorage.setItem(currentDraftKey, JSON.stringify(draft));
-                }
-            }
-        } catch (error) { console.warn("ID-Autosave fehlgeschlagen", error); }
-    };
-    document.addEventListener("input", syncParticipantInput, true);
-    document.addEventListener("change", syncParticipantInput, true);
+            const raw = sessionStorage.getItem(key);
+            if (!raw) return;
+            const draft = JSON.parse(raw);
+            if (draft.version !== 1) return;
+            draft.participant_id = input.value;
+            sessionStorage.setItem(key, JSON.stringify(draft));
+        } catch (error) { console.warn("ID-Zwischenspeicherung fehlgeschlagen", error); }
+    }, true);
+
     window.addEventListener("message", (event) => {
         const data = event.data;
-        if (!data || data.type !== "kompchin:draft-request-v2" ||
-            typeof data.key !== "string" ||
-            !data.key.startsWith("kompchin_draft_v1_") ||
+        if (!data || data.type !== "kompchin:tab-storage" || data.key !== key ||
             !event.source || event.source === window) return;
-        // Nur direkte eingebettete Frames dieser App dürfen den Speicher ansprechen.
         const isChild = Array.from(document.querySelectorAll("iframe"))
             .some(frame => frame.contentWindow === event.source);
         if (!isChild) return;
@@ -3015,44 +2980,25 @@ def render_autosave_storage_bridge():
         let success = true;
         try {
             if (data.action === "get") {
-                value = localStorage.getItem(data.key);
-                // Falls nach einem Tab-Neustart die ID separat aktualisiert wurde,
-                // nie die alte ID aus dem Kartenentwurf zurückliefern.
-                if (value && data.key === currentDraftKey) {
-                    try {
-                        const obj = JSON.parse(value);
-                        const latestId = localStorage.getItem(idStorageKey);
-                        if (latestId !== null && obj.version === 1) {
-                            obj.participant_id = latestId;
-                            value = JSON.stringify(obj);
-                        }
-                    } catch (error) {}
-                }
+                value = sessionStorage.getItem(key);
             } else if (data.action === "set" && typeof data.value === "string") {
-                if (data.key === currentDraftKey) {
-                    const obj = JSON.parse(data.value);
-                    const latestId = localStorage.getItem(idStorageKey);
-                    if (latestId !== null && obj.version === 1) {
-                        obj.participant_id = latestId;
+                // Auf ein verzögertes Board-Update darf keine alte ID folgen.
+                const incoming = JSON.parse(data.value);
+                const existing = sessionStorage.getItem(key);
+                if (existing) {
+                    const old = JSON.parse(existing);
+                    if (old.version === 1 && typeof old.participant_id === "string") {
+                        incoming.participant_id = old.participant_id;
                     }
-                    localStorage.setItem(data.key, JSON.stringify(obj));
-                } else {
-                    localStorage.setItem(data.key, data.value);
                 }
+                sessionStorage.setItem(key, JSON.stringify(incoming));
             } else if (data.action === "remove") {
-                localStorage.removeItem(data.key);
-                // Bei der Abgabe wird auch die ID entfernt.
-                // Beim Zurücksetzen bleibt der Wert im Eingabefeld erhalten.
-                // Die neue Eingabe setzt die ID ohnehin beim nächsten Input.
-            } else {
-                return;
-            }
-        } catch (error) {
-            success = false;
-        }
+                sessionStorage.removeItem(key);
+            } else return;
+        } catch (error) { success = false; }
         event.source.postMessage({
-            type: "kompchin:draft-response-v2", action: data.action,
-            key: data.key, requestId: data.requestId, value, success
+            type: "kompchin:tab-storage-response",
+            requestId: data.requestId, value, success
         }, event.origin === "null" ? "*" : event.origin);
     });
 })();
@@ -3191,7 +3137,7 @@ card_fingerprint = hashlib.sha256(
     json.dumps(sorted((card_id, CARDS[card_id]) for card_id in CARDS),
                ensure_ascii=False).encode("utf-8")
 ).hexdigest()[:16]
-AUTOSAVE_KEY = f"kompchin_draft_v1_{APP_PROFICIENCY}_{card_fingerprint}"
+AUTOSAVE_KEY = f"kompchin_tab_draft_v1_{APP_PROFICIENCY}_{card_fingerprint}"
 
 # Wiederhergestellte ID vor dem Erstellen des Text-Widgets setzen.
 if "pending_restored_id" in st.session_state:
@@ -3239,7 +3185,7 @@ st.write(
     "Niveaus: **Pre-A1, A1, A2, B1 oder B2**."
 )
 
-# Der persistente Speicher-Bridge-Listener muss vor der iframe-Komponente bereitstehen.
+# Der Sitzungsspeicher-Listener muss vor der iframe-Komponente bereitstehen.
 render_autosave_storage_bridge()
 
 participant_id = st.text_input(
@@ -3254,7 +3200,7 @@ participant_id = st.text_input(
 )
 
 if st.session_state.submitted:
-    # Löschen erst nach bestätigter erfolgreicher Datenbank-Transaktion.
+    # Erst nach erfolgreicher Datenbank-Transaktion löschen.
     card_sorter(
         st.session_state.board,
         key=f"autosave_clear_{st.session_state.sorter_generation}",
