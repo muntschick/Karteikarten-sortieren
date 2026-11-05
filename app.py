@@ -2392,10 +2392,8 @@ COMPONENT_HTML = r"""
                     catch (error) {}
                     return response.value;
                 }
-                if (legacy) {
-                    await requestParentStorage("set", key, legacy);
-                    return legacy;
-                }
+                // Ein erfolgreich erreichter Hauptspeicher ist maßgeblich.
+                // Ein alter iframe-Entwurf darf ihn NICHT wieder überschreiben.
                 return null;
             }
             if (attempt < 3) {
@@ -2405,8 +2403,9 @@ COMPONENT_HTML = r"""
         return legacy;
     }
 
-    function clearStoredDraft(key) {
+    function clearStoredDraft(key, removeId = false) {
         requestParentStorage("remove", key);
+        if (removeId) requestParentStorage("remove", key + "_participant_id");
         try { window.localStorage.removeItem(key); } catch (error) {}
     }
 
@@ -2816,7 +2815,7 @@ COMPONENT_HTML = r"""
 
             if (action === "clear" || action === "reset") {
                 await requestParentStorage("remove", key);
-                clearStoredDraft(key);
+                clearStoredDraft(key, action === "clear");
             } else if (key) {
                 const raw = await loadStoredDraft(key);
                 if (raw) {
@@ -2848,7 +2847,7 @@ COMPONENT_HTML = r"""
         } else if (actionId && actionId !== lastStorageAction) {
             lastStorageAction = actionId;
             if (action === "clear" || action === "reset") {
-                clearStoredDraft(key);
+                clearStoredDraft(key, action === "clear");
             }
         }
 
@@ -2980,6 +2979,28 @@ def render_autosave_storage_bridge():
 (() => {
     if (window.__kompchinAutosaveBridgeV2) return;
     window.__kompchinAutosaveBridgeV2 = true;
+    // ID direkt aus dem sichtbaren Textfeld sichern (auch vor Enter).
+    // Das verhindert, dass eine spätere Karten-Rückmeldung eine alte ID schreibt.
+    const currentDraftKey = __DRAFT_KEY__;
+    const idStorageKey = currentDraftKey + "_participant_id";
+    const syncParticipantInput = (event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement) ||
+            input.getAttribute("aria-label") !== "KompChin-ID") return;
+        try {
+            localStorage.setItem(idStorageKey, input.value);
+            const raw = localStorage.getItem(currentDraftKey);
+            if (raw) {
+                const draft = JSON.parse(raw);
+                if (draft && draft.version === 1) {
+                    draft.participant_id = input.value;
+                    localStorage.setItem(currentDraftKey, JSON.stringify(draft));
+                }
+            }
+        } catch (error) { console.warn("ID-Autosave fehlgeschlagen", error); }
+    };
+    document.addEventListener("input", syncParticipantInput, true);
+    document.addEventListener("change", syncParticipantInput, true);
     window.addEventListener("message", (event) => {
         const data = event.data;
         if (!data || data.type !== "kompchin:draft-request-v2" ||
@@ -2995,10 +3016,34 @@ def render_autosave_storage_bridge():
         try {
             if (data.action === "get") {
                 value = localStorage.getItem(data.key);
+                // Falls nach einem Tab-Neustart die ID separat aktualisiert wurde,
+                // nie die alte ID aus dem Kartenentwurf zurückliefern.
+                if (value && data.key === currentDraftKey) {
+                    try {
+                        const obj = JSON.parse(value);
+                        const latestId = localStorage.getItem(idStorageKey);
+                        if (latestId !== null && obj.version === 1) {
+                            obj.participant_id = latestId;
+                            value = JSON.stringify(obj);
+                        }
+                    } catch (error) {}
+                }
             } else if (data.action === "set" && typeof data.value === "string") {
-                localStorage.setItem(data.key, data.value);
+                if (data.key === currentDraftKey) {
+                    const obj = JSON.parse(data.value);
+                    const latestId = localStorage.getItem(idStorageKey);
+                    if (latestId !== null && obj.version === 1) {
+                        obj.participant_id = latestId;
+                    }
+                    localStorage.setItem(data.key, JSON.stringify(obj));
+                } else {
+                    localStorage.setItem(data.key, data.value);
+                }
             } else if (data.action === "remove") {
                 localStorage.removeItem(data.key);
+                // Bei der Abgabe wird auch die ID entfernt.
+                // Beim Zurücksetzen bleibt der Wert im Eingabefeld erhalten.
+                // Die neue Eingabe setzt die ID ohnehin beim nächsten Input.
             } else {
                 return;
             }
@@ -3012,7 +3057,7 @@ def render_autosave_storage_bridge():
     });
 })();
 </script>
-""", unsafe_allow_javascript=True)
+""".replace("__DRAFT_KEY__", json.dumps(AUTOSAVE_KEY)), unsafe_allow_javascript=True)
 
 
 def card_sorter(board, key, storage_action="", hidden=False):
@@ -3283,7 +3328,9 @@ if isinstance(component_result, dict):
             and all(k in LABEL_TO_ID and type(v) is bool for k, v in incoming_confidence.items())):
         recovered_id = component_result.get("participant_id") if component_result.get("recovered") else None
         if isinstance(recovered_id, str) and len(recovered_id) <= 100:
-            if recovered_id != st.session_state.get("participant_id", ""):
+            # Nur eine leere ID initial befüllen. Ein aktueller Eingabewert
+            # darf nie durch einen älteren Entwurf überschrieben werden.
+            if not st.session_state.get("participant_id", "").strip():
                 st.session_state.pending_restored_id = recovered_id
         if (incoming_board != st.session_state.board
                 or incoming_confidence != st.session_state.confidence
