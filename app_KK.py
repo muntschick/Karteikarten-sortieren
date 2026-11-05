@@ -6,6 +6,7 @@ import random
 import tempfile
 import uuid
 import hmac
+import time
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -18,9 +19,78 @@ import streamlit.components.v1 as components
 
 
 LEVELS = ["vor A1", "A1", "A2", "B1", "B2", "C1", "C2"]
-# Historische Daten bleiben in Supabase und in Rohdatenexporten als "Pre-A1" erhalten.
-# Nur bei numerischen Niveauvergleichen gilt die alte Bezeichnung als Stufe 0.
-ANALYSIS_POSITIONS = {**{level: i for i, level in enumerate(LEVELS)}, "Pre-A1": 0}
+# Diese App wertet ausschließlich die sieben aktuellen Niveaus aus.
+# Historische Daten anderer Apps werden in Supabase nicht geändert.
+ANALYSIS_POSITIONS = {level: i for i, level in enumerate(LEVELS)}
+
+
+def level_positions(series):
+    """Numerische Positionen der sieben in dieser App verwendeten Niveaus."""
+    return series.map(ANALYSIS_POSITIONS)
+
+
+def reference_matches(frame):
+    """Übereinstimmung der Niveaustufen anhand ihrer Position."""
+    rated = level_positions(frame["participant_level"])
+    reference = level_positions(frame["reference_level"])
+    return rated.notna() & reference.notna() & rated.eq(reference)
+
+
+def numeric_card_id_key(card_id):
+    """Ganze Ziffernfolge am Ende der Karten-ID, unabhängig von ihrer Länge."""
+    value = str(card_id)
+    match = re.search(r"(\d+)$", value)
+    return (0, int(match.group(1)), value) if match else (1, 0, value)
+
+
+def safe_csv_value(value):
+    """CSV-Formelausführung in Tabellenprogrammen verhindern (nur Exporte)."""
+    if isinstance(value, str) and (
+        value.startswith(("\t", "\r", "\n"))
+        or re.match(r"^\s*[=+\-@]", value)
+    ):
+        return "'" + value
+    return value
+
+
+def dataframe_to_safe_csv(frame, *, index=False):
+    """Excel-kompatibler CSV-Export; Zahlen bleiben Zahlen."""
+    safe_frame = frame.copy()
+    for col in safe_frame.select_dtypes(include=["object", "string"]).columns:
+        safe_frame[col] = safe_frame[col].map(safe_csv_value)
+    return safe_frame.to_csv(index=index).encode("utf-8-sig")
+
+
+def admin_code_is_valid(entered_code):
+    """Einheitliche Admin-Codeprüfung; ein leerer Secret-Wert ist ungültig."""
+    correct_code = str(st.secrets.get("ADMIN_CODE", "")).strip()
+    return bool(correct_code) and hmac.compare_digest(
+        entered_code.strip(), correct_code
+    )
+
+
+def try_admin_login(entered_code):
+    """Schützt gegen wiederholte Fehlversuche innerhalb derselben Sitzung.
+
+    Diese lokale Sperre ersetzt keine serverseitige Begrenzung von Loginversuchen.
+    """
+    now = time.monotonic()
+    if now < st.session_state.get("admin_locked_until", 0):
+        st.warning("Zu viele Fehlversuche. Bitte versuchen Sie es in einer Minute erneut.")
+        return False
+    if admin_code_is_valid(entered_code):
+        st.session_state.pop("admin_failed_attempts", None)
+        st.session_state.pop("admin_locked_until", None)
+        return True
+    attempts = st.session_state.get("admin_failed_attempts", 0) + 1
+    if attempts >= 5:
+        st.session_state["admin_failed_attempts"] = 0
+        st.session_state["admin_locked_until"] = now + 60
+        st.warning("Zu viele Fehlversuche. Bitte versuchen Sie es in einer Minute erneut.")
+    else:
+        st.session_state["admin_failed_attempts"] = attempts
+        st.error("Admin-Code nicht korrekt.")
+    return False
 
 UNASSIGNED = "Noch nicht zugeordnet"
 
@@ -384,7 +454,8 @@ def save_submission(participant_id, assignments, confidence):
     return str(submission_id)
 
 
-def load_results():
+@st.cache_data(ttl=120, show_spinner=False)
+def load_results(proficiency):
     """
     Lädt ausschließlich Ergebnisse der
     aktuellen Kompetenz.
@@ -420,8 +491,8 @@ def load_results():
                     c.sort_order
                 """,
                 (
-                    APP_PROFICIENCY,
-                    APP_PROFICIENCY,
+                    proficiency,
+                    proficiency,
                 )
             )
             return cur.fetchall()
@@ -455,7 +526,7 @@ def create_results_csv(rows):
         row = list(row)
         if hasattr(row[1], "isoformat"):
             row[1] = row[1].isoformat()
-        writer.writerow(row)
+        writer.writerow([safe_csv_value(value) for value in row])
 
     return output.getvalue().encode("utf-8-sig")
 
@@ -488,6 +559,7 @@ def results_to_dataframe(rows):
     return df
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_submission_overview(raw_df):
     if raw_df.empty:
         return pd.DataFrame(
@@ -536,7 +608,8 @@ def build_submission_overview(raw_df):
     ]
 
 
-def build_card_analysis(raw_df):
+@st.cache_data(ttl=120, show_spinner=False)
+def build_card_analysis(raw_df, card_metadata):
     """
     Berechnet pro Karte sowohl Interrater-Konsens als auch
     den Vergleich mit dem hinterlegten Referenzniveau.
@@ -548,20 +621,16 @@ def build_card_analysis(raw_df):
         in enumerate(LEVELS)
     }
 
-    ordered_card_ids = sorted(
-        CARDS,
-        key=lambda card_id: int(card_id[-2:])
-    )
+    ordered_card_ids = sorted(card_metadata, key=numeric_card_id_key)
 
     for card_id in ordered_card_ids:
-        meta = CARD_METADATA[card_id]
+        meta = card_metadata[card_id]
         card_rows = raw_df[
             raw_df["card_id"] == card_id
         ]
 
         counts_series = (
             card_rows["participant_level"]
-            .replace({"Pre-A1": "vor A1"})
             .value_counts()
             .reindex(
                 LEVELS,
@@ -608,7 +677,7 @@ def build_card_analysis(raw_df):
             )
 
             reference_match = (
-                counts["vor A1" if reference_level == "Pre-A1" else reference_level]
+                counts[reference_level]
                 / number_ratings
                 * 100
             )
@@ -623,9 +692,6 @@ def build_card_analysis(raw_df):
                 / number_ratings
             )
 
-            majority_matches_reference = (
-                ("vor A1" if reference_level == "Pre-A1" else reference_level) in modal_levels
-            )
         else:
             majority = "—"
             agreement = 0.0
@@ -633,7 +699,6 @@ def build_card_analysis(raw_df):
             entropy = 0.0
             reference_match = 0.0
             mean_abs_deviation = 0.0
-            majority_matches_reference = False
 
         pair_count = number_ratings * (number_ratings - 1) / 2
         pair_distance = (
@@ -687,6 +752,7 @@ def full_table_height(df):
     return 48 + len(df) * 35
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_rater_level_analysis(raw_df, participant_id):
     """
     Trefferquote einer Person getrennt
@@ -753,7 +819,7 @@ def build_rater_level_analysis(raw_df, participant_id):
 
     result["Referenzniveau"] = pd.Categorical(
         result["Referenzniveau"],
-        categories=["Pre-A1", *LEVELS],
+        categories=LEVELS,
         ordered=True,
     )
 
@@ -761,6 +827,7 @@ def build_rater_level_analysis(raw_df, participant_id):
 
     return result[columns].reset_index(drop=True)
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_confidence_accuracy_analysis(raw_df):
     """Referenzübereinstimmung je Sicherheitszustand (nur explizite Antworten)."""
     columns = ["Sicherheit", "Bewertungen", "Referenzgleiche Zuordnungen", "Referenzübereinstimmung %"]
@@ -771,7 +838,7 @@ def build_confidence_accuracy_analysis(raw_df):
     for confidence_value, label in [(True, "Sicher (!)"), (False, "Unsicher (?)")]:
         subset = raw_df[raw_df["confidence"].eq(confidence_value)]
         count = len(subset)
-        hits = int((subset["participant_level"] == subset["reference_level"]).sum())
+        hits = int(reference_matches(subset).sum())
         rows.append({
             "Sicherheit": label,
             "Bewertungen": count,
@@ -781,12 +848,13 @@ def build_confidence_accuracy_analysis(raw_df):
     return pd.DataFrame(rows, columns=columns)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_confidence_level_analysis(raw_df):
     """Sicherheitsverteilung nach Referenzniveau; Quoten unter expliziten Antworten."""
     columns = ["Referenzniveau", "Bewertungen", "Mit Angabe", "Sicher (!)",
                "Unsicher (?)", "Ohne Angabe", "Sicher %", "Unsicher %"]
     rows = []
-    reference_levels = (["Pre-A1"] if raw_df["reference_level"].eq("Pre-A1").any() else []) + LEVELS
+    reference_levels = LEVELS
     for level in reference_levels:
         subset = raw_df[raw_df["reference_level"] == level]
         total = len(subset)
@@ -861,6 +929,7 @@ def _reliability_from_counts(counts_by_card):
     return alpha, fleiss
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_reliability_analysis(raw_df, bootstrap_samples=500):
     """95-%-Perzentil-Bootstrap-KI durch Resampling ganzer Karten (mit fester Seed)."""
     columns = ["Kennzahl", "Wert", "95-%-KI Untergrenze", "95-%-KI Obergrenze"]
@@ -870,7 +939,7 @@ def build_reliability_analysis(raw_df, bootstrap_samples=500):
     for _, group in data.groupby("card_id"):
         if len(group) < 2:
             continue
-        counts = group["participant_level"].replace({"Pre-A1": "vor A1"}).value_counts()
+        counts = group["participant_level"].value_counts()
         counts_by_card.append([int(counts.get(level, 0)) for level in LEVELS])
 
     if not counts_by_card:
@@ -908,6 +977,7 @@ def build_reliability_analysis(raw_df, bootstrap_samples=500):
     ], columns=columns)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_spearman_matrix(raw_df):
     """Paarweise Rangkorrelation über gemeinsame Karten; konstante Reihen undefiniert."""
     if raw_df.empty:
@@ -919,11 +989,12 @@ def build_spearman_matrix(raw_df):
     return pivot.corr(method="spearman", min_periods=3).round(3)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def build_reference_summary(raw_df):
     if raw_df.empty:
         return {"Referenzübereinstimmung %": None, "Ø Referenzabweichung (Stufen)": None}
     order = ANALYSIS_POSITIONS
-    correct = raw_df["participant_level"].eq(raw_df["reference_level"])
+    correct = reference_matches(raw_df)
     distance = (raw_df["participant_level"].map(order) - raw_df["reference_level"].map(order)).abs()
     return {"Referenzübereinstimmung %": round(100 * correct.mean(), 1),
             "Ø Referenzabweichung (Stufen)": round(distance.mean(), 2)}
@@ -932,7 +1003,7 @@ def build_reference_summary(raw_df):
 def render_admin_dashboard(rows, all_proficiencies=None):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
-    card_analysis_df = build_card_analysis(raw_df)
+    card_analysis_df = build_card_analysis(raw_df, CARD_METADATA)
     rater_analysis_df = build_rater_analysis(raw_df)
     confidence_accuracy_df = build_confidence_accuracy_analysis(raw_df)
     confidence_level_df = build_confidence_level_analysis(raw_df)
@@ -947,17 +1018,8 @@ def render_admin_dashboard(rows, all_proficiencies=None):
     else:
         last_submission = submissions_df.iloc[0]["Zeitpunkt (UTC)"]
 
-    st.title(f"Admin-Dashboard {APP_PROFICIENCY}")
-
-    top_left, top_right = st.columns([3, 1])
-    with top_left:
-        st.caption(
-            "Live-Auswertung aus Supabase/PostgreSQL."
-        )
-    with top_right:
-        if st.button("← Zur Fertigkeiten-Auswahl", use_container_width=True):
-            st.session_state["admin_dashboard_open"] = False
-            st.rerun()
+    st.subheader(f"Detailauswertung: {APP_PROFICIENCY}")
+    st.caption("Ergebnisse aus Supabase/PostgreSQL (Cache bis zu 120 Sekunden).")
 
     (
         tab_overview,
@@ -989,9 +1051,6 @@ def render_admin_dashboard(rows, all_proficiencies=None):
     # 1. Überblick
     with tab_overview:
 
-        if st.button("Daten neu laden"):
-            load_cards.clear()
-            st.rerun()
         metric_1, metric_2 = st.columns(2)
         metric_1.metric("Abgaben", number_submissions)
         metric_2.metric("Zuordnungen", number_assignments)
@@ -1002,7 +1061,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
             x, y = st.columns(2)
             x.metric("Referenzübereinstimmung", f"{reference_summary['Referenzübereinstimmung %']:.1f} %")
             y.metric("Ø Referenzabweichung", f"{reference_summary['Ø Referenzabweichung (Stufen)']:.2f} Stufen")
-        st.caption("Referenzübereinstimmung: Anteil der Zuordnungen, die exakt dem hinterlegten Referenzniveau entsprechen. "
+        st.caption("Referenzübereinstimmung: Anteil der Zuordnungen auf derselben Niveaustufe wie die Referenz. "
                    "Ø Referenzabweichung: durchschnittlicher absoluter Abstand zwischen vergebenem und Referenzniveau; "
                    "eine Stufe entspricht einem Schritt in vor A1 → A1 → A2 → B1 → B2 → C1 → C2.")
 
@@ -1022,7 +1081,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         with comparison_col_2:
             st.download_button(
                 "📥 Fertigkeitenvergleich als CSV",
-                data=comparison_overview.to_csv(index=False).encode("utf-8-sig"),
+                data=dataframe_to_safe_csv(comparison_overview),
                 file_name="fertigkeitenvergleich.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -1031,9 +1090,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         st.markdown(f"**Detailauswertung: {APP_PROFICIENCY}**")
         raw_csv = create_results_csv(rows)
         analysis_csv = (
-            card_analysis_df
-            .to_csv(index=False)
-            .encode("utf-8-sig")
+            dataframe_to_safe_csv(card_analysis_df)
         )
 
         download_1, download_2 = st.columns(2)
@@ -1059,7 +1116,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         with download_3:
             st.download_button(
                 "📥 Sicherheit und Treffergenauigkeit als CSV",
-                data=confidence_accuracy_df.to_csv(index=False).encode("utf-8-sig"),
+                data=dataframe_to_safe_csv(confidence_accuracy_df),
                 file_name="sicherheit_treffergenauigkeit.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -1067,7 +1124,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         with download_4:
             st.download_button(
                 "📥 Sicherheit nach Referenzniveau als CSV",
-                data=confidence_level_df.to_csv(index=False).encode("utf-8-sig"),
+                data=dataframe_to_safe_csv(confidence_level_df),
                 file_name="sicherheit_nach_referenzniveau.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -1076,7 +1133,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         st.markdown("**Bewerter:innen**")
         st.download_button(
             "📥 Bewerter:innen als CSV",
-            data=rater_analysis_df.to_csv(index=False).encode("utf-8-sig"),
+            data=dataframe_to_safe_csv(rater_analysis_df),
             file_name=f"bewerter_{APP_PROFICIENCY}.csv",
             mime="text/csv",
             use_container_width=True,
@@ -1090,8 +1147,12 @@ def render_admin_dashboard(rows, all_proficiencies=None):
             export_level_df = build_rater_level_analysis(raw_df, export_participant)
             st.download_button(
                 "📥 Niveauanalyse als CSV",
-                data=export_level_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"niveauanalyse_{export_participant}_{APP_PROFICIENCY}.csv",
+                data=dataframe_to_safe_csv(export_level_df),
+                file_name=(
+                    "niveauanalyse_" + re.sub(r"[^a-zA-Z0-9._-]", "_", str(export_participant))[:60]
+                    + "_" + re.sub(r"[^a-zA-Z0-9._-]", "_", APP_PROFICIENCY)
+                    + ".csv"
+                ),
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -1100,17 +1161,17 @@ def render_admin_dashboard(rows, all_proficiencies=None):
         a, b = st.columns(2)
         with a:
             st.download_button("📥 Reliabilitätskennzahlen als CSV",
-                               data=reliability_df.to_csv(index=False).encode("utf-8-sig"),
+                               data=dataframe_to_safe_csv(reliability_df),
                                file_name="reliabilitaet.csv", mime="text/csv", use_container_width=True)
         with b:
             st.download_button("📥 Spearman-Matrix als CSV",
-                               data=spearman_df.to_csv(index=True).encode("utf-8-sig"),
+                               data=dataframe_to_safe_csv(spearman_df, index=True),
                                file_name="spearman_matrix.csv", mime="text/csv", use_container_width=True)
 
         st.caption(
             "Die Downloads enthalten Rohdaten und aggregierte Ergebnisse. "
             "Das Modalniveau ist die häufigste Einstufung; die Referenzübereinstimmung "
-            "ist die exakte Gleichheit mit dem hinterlegten Referenzniveau."
+            "vergleicht die vergebenen Einstufungen mit den hinterlegten Referenzniveaus."
         )
 
         # Glossare stehen direkt unter den jeweiligen Auswertungstabellen.
@@ -1293,10 +1354,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
             "der Teilnehmenden."
         )
 
-        ordered_card_ids = sorted(
-            CARDS,
-            key=lambda card_id: int(card_id[-2:])
-        )
+        ordered_card_ids = sorted(CARDS, key=numeric_card_id_key)
 
         for card_id in ordered_card_ids:
 
@@ -1310,7 +1368,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
 
             # Stimmen pro Niveau zählen
             counts = (
-                card_ratings.replace({"Pre-A1": "vor A1"})
+                card_ratings
                 .value_counts()
                 .reindex(LEVELS, fill_value=0)
             )
@@ -1708,70 +1766,7 @@ def render_admin_dashboard(rows, all_proficiencies=None):
 
 
 
-def render_admin_area():
-    with st.sidebar:
-        with st.expander("🔒 Admin-Bereich", expanded=False):
-            if not st.session_state.get("admin_granted", False):
-                with st.form("admin_login_form"):
-                    entered_admin_code = st.text_input(
-                        "Admin-Code",
-                        type="password",
-                    )
-                    login = st.form_submit_button("Admin öffnen")
-
-                if login:
-                    try:
-                        correct_admin_code = str(st.secrets["ADMIN_CODE"])
-                    except Exception:
-                        st.error(
-                            "ADMIN_CODE wurde noch nicht in den "
-                            "Streamlit-Secrets konfiguriert."
-                        )
-                        return
-
-                    if hmac.compare_digest(
-                        entered_admin_code.strip(),
-                        correct_admin_code,
-                    ):
-                        st.session_state["admin_granted"] = True
-                        st.session_state["admin_dashboard_open"] = True
-                        st.rerun()
-                    else:
-                        st.error("Admin-Code nicht korrekt.")
-
-                return
-
-            st.success("Admin angemeldet")
-
-            if st.button(
-                "📊 Dashboard öffnen",
-                use_container_width=True,
-            ):
-                st.session_state["admin_granted"] = True
-                st.session_state["admin_dashboard_open"] = True
-                st.rerun()
-
-            if st.button("Admin abmelden", use_container_width=True):
-                st.session_state["admin_granted"] = False
-                st.session_state["admin_dashboard_open"] = False
-                st.rerun()
-
-    if not st.session_state.get("admin_granted", False):
-        return
-
-    if not st.session_state.get("admin_dashboard_open", False):
-        return
-
-    try:
-        rows = load_results()
-    except psycopg.Error as exc:
-        print("Fehler beim Laden der Admin-Daten:", repr(exc))
-        st.error("Die Ergebnisse konnten nicht geladen werden.")
-        st.stop()
-        
-    render_admin_dashboard(rows)
-    st.stop()
-
+@st.cache_data(ttl=120, show_spinner=False)
 def build_rater_analysis(raw_df):
     """
     Erstellt eine Auswertung pro Abgabe.
@@ -1826,10 +1821,10 @@ def build_rater_analysis(raw_df):
         .transform("size")
     )
 
-    # Anzahl identischer Einstufungen pro Karte
+    # Anzahl der gleichen Niveaueinstufungen pro Karte.
     df["gleiche_bewertungen"] = (
         df.groupby(
-            ["card_id", "participant_level"]
+            ["card_id", "bewertungs_position"]
         )["card_id"]
         .transform("size")
     )
@@ -3055,7 +3050,7 @@ def require_access_code():
             if hmac.compare_digest(
                 entered_code.strip(),
                 correct_code,
-            ):
+            ) and correct_code.strip():
                 st.session_state.access_granted = True
                 st.rerun()
             else:
@@ -3067,12 +3062,10 @@ def require_access_code():
                 admin_code = st.text_input("Admin-Code", type="password")
                 admin_submit = st.form_submit_button("Admin-Dashboard öffnen")
             if admin_submit:
-                if hmac.compare_digest(admin_code.strip(), str(st.secrets.get("ADMIN_CODE", ""))) and admin_code.strip():
+                if try_admin_login(admin_code):
                     st.session_state["admin_granted"] = True
                     st.session_state["admin_dashboard_open"] = True
                     st.rerun()
-                else:
-                    st.error("Admin-Code nicht korrekt.")
 
     st.stop()
 
@@ -3140,11 +3133,10 @@ def render_proficiency_comparison(proficiencies):
         subset = raw_df.loc[raw_df["proficiency"].eq(name)]
         total = len(subset)
         if total:
-            # Historische Werte bleiben im Export erhalten; fachlich identische Stufe.
-            rater = subset["participant_level"].replace({"Pre-A1": "vor A1"})
-            reference = subset["reference_level"].replace({"Pre-A1": "vor A1"})
-            agreement = 100 * rater.eq(reference).mean()
-            offsets = (rater.map(ANALYSIS_POSITIONS) - reference.map(ANALYSIS_POSITIONS)).abs()
+            # Vergleich ausschließlich der sieben aktuellen Niveaustufen.
+            agreement = 100 * reference_matches(subset).mean()
+            offsets = (level_positions(subset["participant_level"])
+                       - level_positions(subset["reference_level"])).abs()
             secure = int(subset["confidence"].eq(True).sum())
             unsure = int(subset["confidence"].eq(False).sum())
         else:
@@ -3167,7 +3159,7 @@ def render_proficiency_comparison(proficiencies):
     st.dataframe(overview, use_container_width=True, hide_index=True,
                  column_config={"Referenzübereinstimmung %": st.column_config.NumberColumn(format="%.1f %%")})
     st.caption("Referenzübereinstimmung und mittlere Abweichung sind über die Zuordnungen "
-               "je Fertigkeit berechnet; historische Pre-A1-Einträge bleiben in den Rohdaten unverändert. "
+               "je Fertigkeit berechnet. "
                "Die Abgabenzahlen werden unabhängig von den Zuordnungen gezählt.")
     if not raw_df.empty:
         st.bar_chart(overview.set_index("Fertigkeit")[["Abgaben"]])
@@ -3198,14 +3190,17 @@ def render_central_admin():
     if chosen != current:
         st.session_state["admin_proficiency"] = chosen
         st.rerun()
-    if st.button("🔄 Ergebnisse aktualisieren"):
+    if st.button("🔄 Alle Daten aktualisieren", help="Aktualisiert Karten, Abgaben und Fertigkeitenvergleich"):
+        load_cards.clear()
+        load_results.clear()
         load_all_proficiency_data.clear()
+        # Daten-Caches leeren; abhängige Auswertungen erkennen neue DataFrames.
         st.rerun()
     CARDS, CARD_METADATA = load_cards(APP_PROFICIENCY)
     LABEL_TO_ID = {f"{cid} · {label}": cid for cid, label in CARDS.items()}
     ID_TO_LABEL = {cid: label for label, cid in LABEL_TO_ID.items()}
     try:
-        rows = load_results()
+        rows = load_results(APP_PROFICIENCY)
     except psycopg.Error as exc:
         print("Admin-Daten konnten nicht geladen werden:", repr(exc))
         st.error("Die Ergebnisse konnten nicht geladen werden.")
@@ -3232,13 +3227,18 @@ def require_proficiency_selection():
         st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
         st.caption("Verfügbare Fertigkeiten")
 
-        for i, (option, color) in enumerate(proficiency_entries):
-            st.markdown(f"""<style>
-                .st-key-skill_color_{i} button {{background: {color} !important;
-                    color: #243047 !important; border: 1px solid {color} !important;
-                    border-radius: 9px !important; font-weight: 600 !important;}}
-                .st-key-skill_color_{i} button:hover {{filter: brightness(0.94);}}
-            </style>""", unsafe_allow_html=True)
+        button_css = []
+        for i, (_, color) in enumerate(proficiency_entries):
+            button_css.append(
+                f".st-key-skill_color_{i} button {{"
+                f"background: {color} !important; color: #243047 !important; "
+                f"border: 1px solid {color} !important; "
+                "border-radius: 9px !important; font-weight: 600 !important;}"
+                f".st-key-skill_color_{i} button:hover {{filter: brightness(0.94);}}"
+            )
+        st.markdown("<style>" + "\n".join(button_css) + "</style>",
+                    unsafe_allow_html=True)
+        for i, (option, _) in enumerate(proficiency_entries):
             with st.container(key=f"skill_color_{i}"):
                 if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
                     st.session_state["selected_proficiency"] = option
@@ -3284,8 +3284,6 @@ ID_TO_LABEL = {
     card_id: label
     for label, card_id in LABEL_TO_ID.items()
 }
-
-render_admin_area()
 
 # Der Schlüssel trennt Kompetenzen und verschiedene Kartenversionen.
 # IDs statt Antwortinhalte für den Fingerprint verwenden.
@@ -3338,10 +3336,21 @@ st.button(
     on_click=back_to_proficiency_selection,
     key="back_to_proficiency_selection",
 )
-st.write(
+# Eine fertigkeitsspezifische Formulierung kann optional in den Secrets stehen:
+# [PROFICIENCY_INSTRUCTIONS]
+# Lesen = "..."
+# Hoeren = "..."
+custom_instructions = st.secrets.get("PROFICIENCY_INSTRUCTIONS", {})
+if not hasattr(custom_instructions, "get"):
+    st.error("PROFICIENCY_INSTRUCTIONS muss eine TOML-Tabelle sein.")
+    st.stop()
+default_instructions = (
     "Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
-    "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
-    "die beschriebene Leseleistung ohne Unterstützung zuverlässig erbringt. "
+    "auf dem eine minimal kompetente Person die beschriebene Leistung "
+    "ohne Unterstützung zuverlässig erbringen kann."
+)
+st.write(str(custom_instructions.get(APP_PROFICIENCY, default_instructions)))
+st.write(
     f"Anzahl der Karten: **{len(CARDS)} Karten**, "
     "Niveaus: **vor A1, A1, A2, B1, B2, C1 oder C2**."
 )
@@ -3529,5 +3538,7 @@ if submit:
                     "Bitte versuchen Sie es erneut."
                 )
             else:
+                load_results.clear()
+                load_all_proficiency_data.clear()
                 st.session_state.submitted = True
                 st.rerun()
