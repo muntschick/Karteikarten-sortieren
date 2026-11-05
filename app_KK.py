@@ -3355,7 +3355,7 @@ if not hasattr(custom_instructions, "get"):
     st.stop()
 default_instructions = (
     "Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
-    "auf dem eine minimal kompetente Person die beschriebene Leistung "
+    "auf dem ein:e minimal kompetente:r Lerner:in die beschriebene Leistung "
     "ohne Unterstützung zuverlässig erbringen kann."
 )
 st.write(str(custom_instructions.get(APP_PROFICIENCY, default_instructions)))
