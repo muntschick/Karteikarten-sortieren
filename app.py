@@ -2342,21 +2342,73 @@ COMPONENT_HTML = r"""
     let confidenceValues = {};
     let currentConfidenceJson = "";
 
-    // Speichern nur bei einer tatsächlichen Änderung, ausschließlich im Browser.
+    // Schreibe in den First-Party-Speicher der Streamlit-Hauptseite.
+    // Iframe-localStorage ist nur Fallback für ältere bereits gespeicherte Entwürfe.
+    let storageRequestNumber = 0;
+    const pendingStorageRequests = new Map();
+
+    function requestParentStorage(action, key, value = null) {
+        return new Promise((resolve) => {
+            const requestId = ++storageRequestNumber;
+            const timeout = window.setTimeout(() => {
+                pendingStorageRequests.delete(requestId);
+                resolve({success: false, timeout: true, value: null});
+            }, 1200);
+            pendingStorageRequests.set(requestId, (result) => {
+                window.clearTimeout(timeout);
+                resolve(result);
+            });
+            window.parent.postMessage({
+                type: "kompchin:draft-request-v2", action, key, value, requestId
+            }, "*");
+        });
+    }
+
+    window.addEventListener("message", (event) => {
+        if (event.source !== window.parent ||
+            !event.data || event.data.type !== "kompchin:draft-response-v2") return;
+        const done = pendingStorageRequests.get(event.data.requestId);
+        if (!done) return;
+        pendingStorageRequests.delete(event.data.requestId);
+        done(event.data);
+    });
+
+    function readLegacyDraft(key) {
+        try { return window.localStorage.getItem(key); }
+        catch (error) { return null; }
+    }
+
+    async function loadStoredDraft(key) {
+        const response = await requestParentStorage("get", key);
+        if (response.success && response.value) return response.value;
+        // Übernahme bereits vorhandener Entwürfe der alten Version, sofern vorhanden.
+        const legacy = readLegacyDraft(key);
+        if (legacy && response.success) {
+            await requestParentStorage("set", key, legacy);
+        }
+        return legacy;
+    }
+
+    function clearStoredDraft(key) {
+        requestParentStorage("remove", key);
+        try { window.localStorage.removeItem(key); } catch (error) {}
+    }
+
     function saveDraft() {
         if (!autosaveReady || !autosaveKey) return;
-        try {
-            const draft = {
-                version: 1,
-                board: readBoard(),
-                confidence: confidenceValues,
-                participant_id: lastParticipantId
-            };
-            window.localStorage.setItem(autosaveKey, JSON.stringify(draft));
-        } catch (error) {
-            // Beispielsweise gesperrter Browserspeicher: App bleibt benutzbar.
-            console.warn("Lokales Speichern nicht verfügbar", error);
-        }
+        const draft = JSON.stringify({
+            version: 1,
+            board: readBoard(),
+            confidence: confidenceValues,
+            participant_id: lastParticipantId
+        });
+        requestParentStorage("set", autosaveKey, draft).then((result) => {
+            if (!result.success) {
+                // Fallback bei deaktiviertem Skript/älteren Streamlit-Versionen.
+                try { window.localStorage.setItem(autosaveKey, draft); }
+                catch (error) { console.warn("Autosave nicht verfügbar", error); }
+            }
+        });
     }
 
     function reportState() {
@@ -2718,7 +2770,7 @@ COMPONENT_HTML = r"""
     // Streamlit schickt Python-Argumente an die Komponente
     // -------------------------------------------------------------
 
-    function onDataFromPython(event) {
+    async function onDataFromPython(event) {
         if (
             !event.data
             || event.data.type
@@ -2736,25 +2788,26 @@ COMPONENT_HTML = r"""
         const participantId = args.participant_id || "";
         if (args.hidden) document.body.style.display = "none";
 
-        // Bei einem frisch geladenen Iframe zuerst den Browserstand lesen.
-        // Der leere Python-Startzustand darf ihn nicht überschreiben.
+        // Beim ersten Render zuerst aus dem persistenten Speicher lesen.
+        // Python darf den Entwurf vor der Wiederherstellung nicht überschreiben.
         if (firstRender || key !== autosaveKey) {
             firstRender = false;
             autosaveKey = key;
             lastParticipantId = participantId;
             lastStorageAction = actionId;
-            autosaveReady = true;
+            autosaveReady = false;
 
             if (action === "clear" || action === "reset") {
-                try { window.localStorage.removeItem(key); } catch (error) {}
+                await requestParentStorage("remove", key);
+                clearStoredDraft(key);
             } else if (key) {
-                try {
-                    const raw = window.localStorage.getItem(key);
-                    if (raw) {
+                const raw = await loadStoredDraft(key);
+                if (raw) {
+                    try {
                         const saved = JSON.parse(raw);
                         if (saved.version === 1 && Array.isArray(saved.board)
                             && saved.confidence && typeof saved.confidence === "object") {
-                            // Python validiert die Kartenstruktur und die Sicherheitswerte.
+                            autosaveReady = true;
                             setComponentValue({
                                 board: saved.board,
                                 confidence: saved.confidence,
@@ -2764,15 +2817,16 @@ COMPONENT_HTML = r"""
                             });
                             return;
                         }
+                    } catch (error) {
+                        console.warn("Zwischenstand kann nicht gelesen werden", error);
                     }
-                } catch (error) {
-                    console.warn("Zwischenstand kann nicht gelesen werden", error);
                 }
             }
+            autosaveReady = true;
         } else if (actionId && actionId !== lastStorageAction) {
             lastStorageAction = actionId;
             if (action === "clear" || action === "reset") {
-                try { window.localStorage.removeItem(key); } catch (error) {}
+                clearStoredDraft(key);
             }
         }
 
@@ -2886,6 +2940,51 @@ _card_sorter_component = (
         path=str(COMPONENT_DIR),
     )
 )
+
+
+def render_autosave_storage_bridge():
+    """Browser-Speicher der Hauptseite statt potenziell flüchtigen Iframe-Speichers.
+
+    Benötigt Streamlit >= 1.52 (st.html(..., unsafe_allow_javascript=True)).
+    """
+    st.html(r"""
+<script>
+(() => {
+    if (window.__kompchinAutosaveBridgeV2) return;
+    window.__kompchinAutosaveBridgeV2 = true;
+    window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || data.type !== "kompchin:draft-request-v2" ||
+            typeof data.key !== "string" ||
+            !data.key.startsWith("kompchin_draft_v1_") ||
+            !event.source || event.source === window) return;
+        // Nur direkte eingebettete Frames dieser App dürfen den Speicher ansprechen.
+        const isChild = Array.from(document.querySelectorAll("iframe"))
+            .some(frame => frame.contentWindow === event.source);
+        if (!isChild) return;
+        let value = null;
+        let success = true;
+        try {
+            if (data.action === "get") {
+                value = localStorage.getItem(data.key);
+            } else if (data.action === "set" && typeof data.value === "string") {
+                localStorage.setItem(data.key, data.value);
+            } else if (data.action === "remove") {
+                localStorage.removeItem(data.key);
+            } else {
+                return;
+            }
+        } catch (error) {
+            success = false;
+        }
+        event.source.postMessage({
+            type: "kompchin:draft-response-v2", action: data.action,
+            key: data.key, requestId: data.requestId, value, success
+        }, event.origin === "null" ? "*" : event.origin);
+    });
+})();
+</script>
+""", unsafe_allow_javascript=True)
 
 
 def card_sorter(board, key, storage_action="", hidden=False):
@@ -3066,6 +3165,9 @@ st.write(
     f"Anzahl der Karten: **{len(CARDS)} Karten**, "
     "Niveaus: **Pre-A1, A1, A2, B1 oder B2**."
 )
+
+# Der persistente Speicher-Bridge-Listener muss vor der iframe-Komponente bereitstehen.
+render_autosave_storage_bridge()
 
 participant_id = st.text_input(
     "KompChin-ID",
