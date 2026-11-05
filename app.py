@@ -2353,7 +2353,7 @@ COMPONENT_HTML = r"""
             const timeout = window.setTimeout(() => {
                 pendingStorageRequests.delete(requestId);
                 resolve({success: false, timeout: true, value: null});
-            }, 1200);
+            }, 1800);
             pendingStorageRequests.set(requestId, (result) => {
                 window.clearTimeout(timeout);
                 resolve(result);
@@ -2378,13 +2378,29 @@ COMPONENT_HTML = r"""
         catch (error) { return null; }
     }
 
+    // Bei einem Reload kann die Streamlit-Hauptseite ihren Listener erst
+    // nach dem iframe bereitstellen. Deshalb mehrfach lesen statt nach nur
+    // einem Timeout vorschnell einen leeren Startzustand zu verwenden.
     async function loadStoredDraft(key) {
-        const response = await requestParentStorage("get", key);
-        if (response.success && response.value) return response.value;
-        // Übernahme bereits vorhandener Entwürfe der alten Version, sofern vorhanden.
         const legacy = readLegacyDraft(key);
-        if (legacy && response.success) {
-            await requestParentStorage("set", key, legacy);
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const response = await requestParentStorage("get", key);
+            if (response.success) {
+                if (response.value) {
+                    // Die zuletzt verwendete Kopie auch im iframe vorhalten.
+                    try { window.localStorage.setItem(key, response.value); }
+                    catch (error) {}
+                    return response.value;
+                }
+                if (legacy) {
+                    await requestParentStorage("set", key, legacy);
+                    return legacy;
+                }
+                return null;
+            }
+            if (attempt < 3) {
+                await new Promise(resolve => window.setTimeout(resolve, 300));
+            }
         }
         return legacy;
     }
@@ -2402,12 +2418,13 @@ COMPONENT_HTML = r"""
             confidence: confidenceValues,
             participant_id: lastParticipantId
         });
+        // Wichtig: Beide Speicherorte bei JEDER Änderung aktualisieren.
+        // Der iframe-Speicher rettet Reloads, wenn die Hauptseite noch nicht
+        // bereit ist; der Hauptseitenspeicher rettet neue Tabs.
+        try { window.localStorage.setItem(autosaveKey, draft); }
+        catch (error) { console.warn("Iframe-Autosave nicht verfügbar", error); }
         requestParentStorage("set", autosaveKey, draft).then((result) => {
-            if (!result.success) {
-                // Fallback bei deaktiviertem Skript/älteren Streamlit-Versionen.
-                try { window.localStorage.setItem(autosaveKey, draft); }
-                catch (error) { console.warn("Autosave nicht verfügbar", error); }
-            }
+            if (!result.success) console.warn("Hauptseiten-Autosave nicht erreichbar");
         });
     }
 
@@ -2808,6 +2825,11 @@ COMPONENT_HTML = r"""
                         if (saved.version === 1 && Array.isArray(saved.board)
                             && saved.confidence && typeof saved.confidence === "object") {
                             autosaveReady = true;
+                            // Gespeicherte Karten sofort anzeigen; Python
+                            // übernimmt den Zustand im folgenden Rerun.
+                            confidenceValues = {...saved.confidence};
+                            currentConfidenceJson = JSON.stringify(confidenceValues);
+                            renderBoard(saved.board);
                             setComponentValue({
                                 board: saved.board,
                                 confidence: saved.confidence,
@@ -2875,10 +2897,16 @@ COMPONENT_HTML = r"""
     }
 
 
-    window.addEventListener(
-        "message",
-        onDataFromPython
-    );
+    // Streamlit kann unmittelbar nach dem Laden mehrfach render senden.
+    // Sequenzielle Verarbeitung verhindert, dass ein neuer Render die
+    // noch laufende Wiederherstellung überholt.
+    let renderQueue = Promise.resolve();
+    window.addEventListener("message", (event) => {
+        if (!event.data || event.data.type !== "streamlit:render") return;
+        renderQueue = renderQueue.then(() => onDataFromPython(event)).catch(error => {
+            console.error("Fehler beim Wiederherstellen des Kartenstands", error);
+        });
+    });
 
 
     window.addEventListener(
