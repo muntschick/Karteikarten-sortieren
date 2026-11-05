@@ -2973,7 +2973,8 @@ def card_sorter(board, key, storage_action="", hidden=False):
 # -------------------------------------------------------------------
 
 admin_open = (
-    st.session_state.get("admin_granted", False)
+    st.session_state.get("access_granted", False)
+    and st.session_state.get("admin_granted", False)
     and st.session_state.get("admin_dashboard_open", False)
 )
 
@@ -3055,17 +3056,6 @@ def require_access_code():
                 st.rerun()
             else:
                 st.error("Der Zugangscode ist nicht korrekt.")
-
-        st.divider()
-        with st.expander("⚙️ Administration"):
-            with st.form("admin_login_landing"):
-                admin_code = st.text_input("Admin-Code", type="password")
-                admin_submit = st.form_submit_button("Admin-Dashboard öffnen")
-            if admin_submit:
-                if try_admin_login(admin_code):
-                    st.session_state["admin_granted"] = True
-                    st.session_state["admin_dashboard_open"] = True
-                    st.rerun()
 
     st.stop()
 
@@ -3183,9 +3173,12 @@ def render_central_admin():
                               index=names.index(current), key="central_admin_selector")
     with button_col:
         st.write("")
-        if st.button("Admin abmelden", use_container_width=True):
+        if st.button("← Fertigkeiten-Auswahl", use_container_width=True):
+            # Die App-Anmeldung bleibt bestehen; für erneuten Admin-Zugang
+            # ist eine neue Admin-Code-Eingabe erforderlich.
             st.session_state["admin_granted"] = False
             st.session_state["admin_dashboard_open"] = False
+            st.session_state.pop("central_admin_selector", None)
             st.rerun()
     if chosen != current:
         st.session_state["admin_proficiency"] = chosen
@@ -3233,7 +3226,10 @@ def require_proficiency_selection():
                 f".st-key-skill_color_{i} button {{"
                 f"background: {color} !important; color: #243047 !important; "
                 f"border: 1px solid {color} !important; "
-                "border-radius: 9px !important; font-weight: 600 !important;}"
+                "border-radius: 10px !important; font-weight: 600 !important; "
+                "min-height: 3.65rem !important; padding: 0.85rem 1.2rem !important;}"
+                f".st-key-skill_color_{i} button p {{font-size: 1.12rem !important; "
+                "font-weight: 600 !important; line-height: 1.35 !important;}"
                 f".st-key-skill_color_{i} button:hover {{filter: brightness(0.94);}}"
             )
         st.markdown("<style>" + "\n".join(button_css) + "</style>",
@@ -3244,6 +3240,18 @@ def require_proficiency_selection():
                     st.session_state["selected_proficiency"] = option
                     APP_PROFICIENCY = option
                     st.rerun()
+
+        st.divider()
+        with st.expander("⚙️ Administration"):
+            with st.form("admin_login_selection"):
+                admin_code = st.text_input("Admin-Code", type="password")
+                admin_submit = st.form_submit_button(
+                    "Admin-Dashboard öffnen", use_container_width=True
+                )
+            if admin_submit and try_admin_login(admin_code):
+                st.session_state["admin_granted"] = True
+                st.session_state["admin_dashboard_open"] = True
+                st.rerun()
 
     st.stop()
 
@@ -3258,10 +3266,11 @@ def back_to_proficiency_selection():
         st.session_state.pop(state_key, None)
 
 
+# Administration nur nach erfolgreicher App-Anmeldung erreichbar.
+require_access_code()
 if st.session_state.get("admin_granted") and st.session_state.get("admin_dashboard_open"):
     render_central_admin()
 
-require_access_code()
 require_proficiency_selection()
 init_db()
 
