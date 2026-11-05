@@ -7,6 +7,7 @@ import tempfile
 import uuid
 import hmac
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -928,7 +929,7 @@ def build_reference_summary(raw_df):
             "Ø Referenzabweichung (Stufen)": round(distance.mean(), 2)}
 
 
-def render_admin_dashboard(rows):
+def render_admin_dashboard(rows, all_proficiencies=None):
     raw_df = results_to_dataframe(rows)
     submissions_df = build_submission_overview(raw_df)
     card_analysis_df = build_card_analysis(raw_df)
@@ -954,7 +955,7 @@ def render_admin_dashboard(rows):
             "Live-Auswertung aus Supabase/PostgreSQL."
         )
     with top_right:
-        if st.button("← Zur Umfrage", use_container_width=True):
+        if st.button("← Zur Fertigkeiten-Auswahl", use_container_width=True):
             st.session_state["admin_dashboard_open"] = False
             st.rerun()
 
@@ -966,6 +967,7 @@ def render_admin_dashboard(rows):
         tab_raters,
         tab_reliability,
         tab_confidence,
+        tab_comparison,
     ) = st.tabs(
         [
             "📌 Überblick",
@@ -975,8 +977,12 @@ def render_admin_dashboard(rows):
             "👥 Bewerter:innen",
             "📐 Reliabilität",
             "❗ Sicherheitsanalyse",
+            "🌐 Fertigkeitenvergleich",
         ]
     )
+
+    with tab_comparison:
+        render_proficiency_comparison(all_proficiencies or [APP_PROFICIENCY])
 
     # 1. Überblick
     with tab_overview:
@@ -3033,101 +3039,194 @@ def require_access_code():
             else:
                 st.error("Der Zugangscode ist nicht korrekt.")
 
+        st.divider()
+        with st.expander("⚙️ Administration"):
+            with st.form("admin_login_landing"):
+                admin_code = st.text_input("Admin-Code", type="password")
+                admin_submit = st.form_submit_button("Admin-Dashboard öffnen")
+            if admin_submit:
+                if hmac.compare_digest(admin_code.strip(), str(st.secrets.get("ADMIN_CODE", ""))) and admin_code.strip():
+                    st.session_state["admin_granted"] = True
+                    st.session_state["admin_dashboard_open"] = True
+                    st.rerun()
+                else:
+                    st.error("Admin-Code nicht korrekt.")
+
+    st.stop()
+
+
+def configured_proficiencies():
+    """Namen und optionale Farben aus Secrets; auch alte String-Listen sind gültig."""
+    raw = st.secrets.get("PROFICIENCIES", [])
+    if not isinstance(raw, (list, tuple)):
+        st.error("PROFICIENCIES muss in Secrets eine Liste sein.")
+        st.stop()
+    result = []
+    for entry in raw:
+        if isinstance(entry, str):
+            name, color = entry.strip(), "#E4EFFA"
+        elif hasattr(entry, "get"):
+            name = str(entry.get("name", "")).strip()
+            color = str(entry.get("color", "#E4EFFA")).strip()
+        else:
+            st.error("Ungültiger Eintrag in PROFICIENCIES.")
+            st.stop()
+        if not name or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            st.error("Fertigkeitsname oder Hex-Farbe in Secrets ungültig.")
+            st.stop()
+        result.append((name, color))
+    names = [name for name, _ in result]
+    if not names or len(names) != len(set(names)):
+        st.error("PROFICIENCIES muss eindeutige, nichtleere Fertigkeiten enthalten.")
+        st.stop()
+    return result
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_all_proficiency_data(proficiencies):
+    """Nur SELECT; sämtliche Abgaben und Bewertungen der konfigurierten Fertigkeiten."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT proficiency, COUNT(*) AS submissions
+                FROM public.submissions
+                WHERE proficiency = ANY(%s)
+                GROUP BY proficiency
+            """, (list(proficiencies),))
+            counts = dict(cur.fetchall())
+            cur.execute("""
+                SELECT s.participant_id, s.submitted_at_utc, a.card_id,
+                       a.level AS participant_level, c.card_text,
+                       c.reference_level, c.item_category, c.category_number,
+                       c.level_number, c.sort_order, s.proficiency, a.confidence
+                FROM public.submissions s
+                JOIN public.assignments a ON a.submission_id = s.submission_id
+                JOIN public.cards c ON c.card_id = a.card_id AND c.proficiency = s.proficiency
+                WHERE s.proficiency = ANY(%s)
+                ORDER BY s.proficiency, s.submitted_at_utc, s.participant_id, c.sort_order
+            """, (list(proficiencies),))
+            rows = cur.fetchall()
+    return counts, rows
+
+
+def render_proficiency_comparison(proficiencies):
+    """Übergreifender Überblick mit unverändertem Rohdatenexport."""
+    counts, rows = load_all_proficiency_data(tuple(proficiencies))
+    raw_df = results_to_dataframe(rows)
+    result = []
+    for name in proficiencies:
+        subset = raw_df.loc[raw_df["proficiency"].eq(name)]
+        total = len(subset)
+        if total:
+            # Historische Werte bleiben im Export erhalten; fachlich identische Stufe.
+            rater = subset["participant_level"].replace({"Pre-A1": "vor A1"})
+            reference = subset["reference_level"].replace({"Pre-A1": "vor A1"})
+            agreement = 100 * rater.eq(reference).mean()
+            offsets = (rater.map(ANALYSIS_POSITIONS) - reference.map(ANALYSIS_POSITIONS)).abs()
+            secure = int(subset["confidence"].eq(True).sum())
+            unsure = int(subset["confidence"].eq(False).sum())
+        else:
+            agreement, offsets, secure, unsure = None, None, 0, 0
+        result.append({
+            "Fertigkeit": name,
+            "Abgaben": counts.get(name, 0),
+            "Zuordnungen": total,
+            "Referenzübereinstimmung %": round(agreement, 1) if agreement is not None else None,
+            "Ø absolute Referenzabweichung": round(offsets.mean(), 2) if total else None,
+            "Sicher (! )": secure,
+            "Unsicher (?)": unsure,
+            "Ohne Angabe": total - secure - unsure,
+        })
+    overview = pd.DataFrame(result).rename(columns={"Sicher (! )": "Sicher (!)"})
+    a, b, c = st.columns(3)
+    a.metric("Fertigkeiten", len(proficiencies))
+    b.metric("Abgaben insgesamt", int(overview["Abgaben"].sum()))
+    c.metric("Zuordnungen insgesamt", int(overview["Zuordnungen"].sum()))
+    st.dataframe(overview, use_container_width=True, hide_index=True,
+                 column_config={"Referenzübereinstimmung %": st.column_config.NumberColumn(format="%.1f %%")})
+    st.caption("Referenzübereinstimmung und mittlere Abweichung sind über die Zuordnungen "
+               "je Fertigkeit berechnet; historische Pre-A1-Einträge bleiben in den Rohdaten unverändert. "
+               "Die Abgabenzahlen werden unabhängig von den Zuordnungen gezählt.")
+    if not raw_df.empty:
+        st.bar_chart(overview.set_index("Fertigkeit")[["Abgaben"]])
+    st.download_button("📥 Alle Abgaben als CSV", data=create_results_csv(rows),
+                       file_name="alle_fertigkeiten_rohdaten.csv", mime="text/csv",
+                       use_container_width=True)
+    st.download_button("📥 Fertigkeitenvergleich als CSV",
+                       data=overview.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="fertigkeitenvergleich.csv", mime="text/csv",
+                       use_container_width=True)
+
+
+def render_central_admin():
+    """Unabhängig vom Teilnehmenden-Workflow und dessen laufendem Entwurf."""
+    global APP_PROFICIENCY, CARDS, CARD_METADATA, LABEL_TO_ID, ID_TO_LABEL
+    init_db()
+    names = [name for name, _ in configured_proficiencies()]
+    current = st.session_state.get("admin_proficiency")
+    if current not in names:
+        current = names[0]
+        st.session_state["admin_proficiency"] = current
+    APP_PROFICIENCY = current
+    st.title("📊 Zentrales Admin-Dashboard")
+    selector_col, button_col = st.columns([4, 1])
+    with selector_col:
+        chosen = st.selectbox("Fertigkeit für die Detailauswertung", names,
+                              index=names.index(current), key="central_admin_selector")
+    with button_col:
+        st.write("")
+        if st.button("Admin abmelden", use_container_width=True):
+            st.session_state["admin_granted"] = False
+            st.session_state["admin_dashboard_open"] = False
+            st.rerun()
+    if chosen != current:
+        st.session_state["admin_proficiency"] = chosen
+        st.rerun()
+    if st.button("🔄 Ergebnisse aktualisieren"):
+        load_all_proficiency_data.clear()
+        st.rerun()
+    CARDS, CARD_METADATA = load_cards(APP_PROFICIENCY)
+    LABEL_TO_ID = {f"{cid} · {label}": cid for cid, label in CARDS.items()}
+    ID_TO_LABEL = {cid: label for label, cid in LABEL_TO_ID.items()}
+    try:
+        rows = load_results()
+    except psycopg.Error as exc:
+        print("Admin-Daten konnten nicht geladen werden:", repr(exc))
+        st.error("Die Ergebnisse konnten nicht geladen werden.")
+        st.stop()
+    render_admin_dashboard(rows, names)
     st.stop()
 
 
 def require_proficiency_selection():
-    """Fertigkeitenauswahl mit farbigen Buttons aus Secrets."""
+    """Zweite Seite nach dem Login: Auswahl der Fertigkeit aus Secrets."""
     global APP_PROFICIENCY
-
-    import re
-
-    raw_options = st.secrets.get("PROFICIENCIES", [])
-
-    if not isinstance(raw_options, (list, tuple)):
-        st.error("PROFICIENCIES muss eine Liste sein.")
-        st.stop()
-
-    options = []
-
-    for entry in raw_options:
-        if not isinstance(entry, dict):
-            st.error("Jede Fertigkeit benötigt einen Namen und eine Farbe.")
-            st.stop()
-
-        name = str(entry.get("name", "")).strip()
-        color = str(entry.get("color", "")).strip()
-
-        if not name or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
-            st.error(f"Ungültiger Name oder Farbcode: {name}")
-            st.stop()
-
-        options.append((name, color))
-
-    names = [name for name, _ in options]
-
-    if not names or len(set(names)) != len(names):
-        st.error("Bitte eindeutige Fertigkeiten konfigurieren.")
-        st.stop()
-
+    proficiency_entries = configured_proficiencies()
+    options = [name for name, _ in proficiency_entries]
     current = st.session_state.get("selected_proficiency")
-
-    if current in names:
+    if current in options:
         APP_PROFICIENCY = current
         return
-
     st.session_state.pop("selected_proficiency", None)
     APP_PROFICIENCY = None
 
     _, mitte, _ = st.columns([1, 1.5, 1])
-
     with mitte:
         st.title("Fertigkeit auswählen")
-        st.write(
-            "Bitte wählen Sie die Fertigkeit aus, "
-            "die Sie bearbeiten möchten."
-        )
-
+        st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
         st.caption("Verfügbare Fertigkeiten")
 
-        for index, (name, color) in enumerate(options):
-
-            # Button individuell einfärben
-            st.markdown(
-                f"""
-                <style>
-                .st-key-skill_color_{index} button {{
-                    background-color: {color} !important;
-                    color: #243047 !important;
-                    border: 1px solid {color} !important;
-                    border-radius: 9px !important;
-                    font-weight: 600 !important;
-                    transition: filter 0.15s ease !important;
-                }}
-
-                .st-key-skill_color_{index} button:hover {{
-                    filter: brightness(0.94);
-                    color: #172033 !important;
-                    border-color: #8895A7 !important;
-                }}
-
-                .st-key-skill_color_{index} button:focus-visible {{
-                    outline: 2px solid #243047 !important;
-                    outline-offset: 2px !important;
-                }}
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            with st.container(key=f"skill_color_{index}"):
-                if st.button(
-                    name,
-                    key=f"proficiency_button_{index}",
-                    use_container_width=True,
-                ):
-                    st.session_state["selected_proficiency"] = name
-                    APP_PROFICIENCY = name
+        for i, (option, color) in enumerate(proficiency_entries):
+            st.markdown(f"""<style>
+                .st-key-skill_color_{i} button {{background: {color} !important;
+                    color: #243047 !important; border: 1px solid {color} !important;
+                    border-radius: 9px !important; font-weight: 600 !important;}}
+                .st-key-skill_color_{i} button:hover {{filter: brightness(0.94);}}
+            </style>""", unsafe_allow_html=True)
+            with st.container(key=f"skill_color_{i}"):
+                if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
+                    st.session_state["selected_proficiency"] = option
+                    APP_PROFICIENCY = option
                     st.rerun()
 
     st.stop()
@@ -3142,6 +3241,9 @@ def back_to_proficiency_selection():
     ):
         st.session_state.pop(state_key, None)
 
+
+if st.session_state.get("admin_granted") and st.session_state.get("admin_dashboard_open"):
+    render_central_admin()
 
 require_access_code()
 require_proficiency_selection()
