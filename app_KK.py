@@ -3037,35 +3037,98 @@ def require_access_code():
 
 
 def require_proficiency_selection():
-    """Zweite Seite nach dem Login: Auswahl der Fertigkeit aus Secrets."""
+    """Fertigkeitenauswahl mit farbigen Buttons aus Secrets."""
     global APP_PROFICIENCY
+
+    import re
+
     raw_options = st.secrets.get("PROFICIENCIES", [])
+
     if not isinstance(raw_options, (list, tuple)):
-        st.error("PROFICIENCIES muss in Secrets eine Liste sein.")
+        st.error("PROFICIENCIES muss eine Liste sein.")
         st.stop()
-    options = [str(value).strip() for value in raw_options]
-    if not options or any(not value for value in options) or len(set(options)) != len(options):
-        st.error("Bitte eindeutige, nichtleere Fertigkeiten in PROFICIENCIES konfigurieren.")
+
+    options = []
+
+    for entry in raw_options:
+        if not isinstance(entry, dict):
+            st.error("Jede Fertigkeit benötigt einen Namen und eine Farbe.")
+            st.stop()
+
+        name = str(entry.get("name", "")).strip()
+        color = str(entry.get("color", "")).strip()
+
+        if not name or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            st.error(f"Ungültiger Name oder Farbcode: {name}")
+            st.stop()
+
+        options.append((name, color))
+
+    names = [name for name, _ in options]
+
+    if not names or len(set(names)) != len(names):
+        st.error("Bitte eindeutige Fertigkeiten konfigurieren.")
         st.stop()
 
     current = st.session_state.get("selected_proficiency")
-    if current in options:
+
+    if current in names:
         APP_PROFICIENCY = current
         return
+
     st.session_state.pop("selected_proficiency", None)
     APP_PROFICIENCY = None
 
     _, mitte, _ = st.columns([1, 1.5, 1])
+
     with mitte:
         st.title("Fertigkeit auswählen")
-        st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
+        st.write(
+            "Bitte wählen Sie die Fertigkeit aus, "
+            "die Sie bearbeiten möchten."
+        )
+
         st.caption("Verfügbare Fertigkeiten")
 
-        for option in options:
-            if st.button(option, key=f"proficiency_button_{option}", use_container_width=True):
-                st.session_state["selected_proficiency"] = option
-                APP_PROFICIENCY = option
-                st.rerun()
+        for index, (name, color) in enumerate(options):
+
+            # Button individuell einfärben
+            st.markdown(
+                f"""
+                <style>
+                .st-key-skill_color_{index} button {{
+                    background-color: {color} !important;
+                    color: #243047 !important;
+                    border: 1px solid {color} !important;
+                    border-radius: 9px !important;
+                    font-weight: 600 !important;
+                    transition: filter 0.15s ease !important;
+                }}
+
+                .st-key-skill_color_{index} button:hover {{
+                    filter: brightness(0.94);
+                    color: #172033 !important;
+                    border-color: #8895A7 !important;
+                }}
+
+                .st-key-skill_color_{index} button:focus-visible {{
+                    outline: 2px solid #243047 !important;
+                    outline-offset: 2px !important;
+                }}
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            with st.container(key=f"skill_color_{index}"):
+                if st.button(
+                    name,
+                    key=f"proficiency_button_{index}",
+                    use_container_width=True,
+                ):
+                    st.session_state["selected_proficiency"] = name
+                    APP_PROFICIENCY = name
+                    st.rerun()
 
     st.stop()
 
