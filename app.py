@@ -6,6 +6,7 @@ import random
 import tempfile
 import uuid
 import hmac
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2258,6 +2259,12 @@ COMPONENT_HTML = r"""
     let dropAccepted = false;
 
     let currentBoardJson = "";
+    let autosaveKey = "";
+    let autosaveReady = false;
+    let lastParticipantId = "";
+    let lastStorageAction = "";
+    let firstRender = true;
+    let shouldSaveInitial = false;
     let lastReportedHeight = 0;
 
 
@@ -2336,9 +2343,67 @@ COMPONENT_HTML = r"""
     let confidenceValues = {};
     let currentConfidenceJson = "";
 
+    // Einzige Speicherquelle: sessionStorage der Hauptseite.
+    // Übersteht ein Neuladen, wird beim normalen Schließen des Tabs verworfen.
+    let storageRequestNumber = 0;
+    const pendingStorageRequests = new Map();
+
+    function requestTabStorage(action, key, value = null) {
+        return new Promise((resolve) => {
+            const requestId = ++storageRequestNumber;
+            const timeout = window.setTimeout(() => {
+                pendingStorageRequests.delete(requestId);
+                resolve({success: false, value: null});
+            }, 2000);
+            pendingStorageRequests.set(requestId, (result) => {
+                window.clearTimeout(timeout);
+                resolve(result);
+            });
+            window.parent.postMessage({
+                type: "kompchin:tab-storage", action, key, value, requestId
+            }, "*");
+        });
+    }
+
+    window.addEventListener("message", (event) => {
+        if (event.source !== window.parent || !event.data ||
+            event.data.type !== "kompchin:tab-storage-response") return;
+        const done = pendingStorageRequests.get(event.data.requestId);
+        if (!done) return;
+        pendingStorageRequests.delete(event.data.requestId);
+        done(event.data);
+    });
+
+    async function loadStoredDraft(key) {
+        // Der Listener der Hauptseite kann nach dem iframe starten.
+        // Vor der Antwort keinesfalls den leeren Anfangszustand speichern.
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const result = await requestTabStorage("get", key);
+            if (result.success) return result.value;
+            await new Promise(resolve => window.setTimeout(resolve, 300));
+        }
+        console.warn("Autosave: Sitzungsspeicher der Hauptseite nicht erreichbar");
+        return null;
+    }
+
+    function clearStoredDraft(key) {
+        requestTabStorage("remove", key);
+    }
+
+    function saveDraft() {
+        if (!autosaveReady || !autosaveKey) return;
+        requestTabStorage("set", autosaveKey, JSON.stringify({
+            version: 1,
+            board: readBoard(),
+            confidence: confidenceValues,
+            participant_id: lastParticipantId
+        }));
+    }
+
     function reportState() {
         currentBoardJson = JSON.stringify(readBoard());
         currentConfidenceJson = JSON.stringify(confidenceValues);
+        saveDraft();
         setComponentValue({board: readBoard(), confidence: confidenceValues});
     }
 
@@ -2694,7 +2759,7 @@ COMPONENT_HTML = r"""
     // Streamlit schickt Python-Argumente an die Komponente
     // -------------------------------------------------------------
 
-    function onDataFromPython(event) {
+    async function onDataFromPython(event) {
         if (
             !event.data
             || event.data.type
@@ -2705,6 +2770,71 @@ COMPONENT_HTML = r"""
 
         const args =
             event.data.args || {};
+
+        const key = args.storage_key || "";
+        const action = args.storage_action || "";
+        const actionId = args.storage_action_id || "";
+        const participantId = args.participant_id || "";
+        if (args.hidden) document.body.style.display = "none";
+
+        // Beim ersten Render zuerst aus dem persistenten Speicher lesen.
+        // Python darf den Entwurf vor der Wiederherstellung nicht überschreiben.
+        if (firstRender || key !== autosaveKey) {
+            firstRender = false;
+            autosaveKey = key;
+            lastParticipantId = participantId;
+            lastStorageAction = actionId;
+            autosaveReady = false;
+            shouldSaveInitial = true;
+
+            if (action === "clear" || action === "reset") {
+                clearStoredDraft(key);
+            } else if (key) {
+                const raw = await loadStoredDraft(key);
+                if (raw) {
+                    try {
+                        const saved = JSON.parse(raw);
+                        if (saved.version === 1 && Array.isArray(saved.board)
+                            && saved.confidence && typeof saved.confidence === "object") {
+                            autosaveReady = true;
+                            shouldSaveInitial = false;
+                            // Gespeicherte Karten sofort anzeigen; Python
+                            // übernimmt den Zustand im folgenden Rerun.
+                            confidenceValues = {...saved.confidence};
+                            currentConfidenceJson = JSON.stringify(confidenceValues);
+                            renderBoard(saved.board);
+                            setComponentValue({
+                                board: saved.board,
+                                confidence: saved.confidence,
+                                participant_id: typeof saved.participant_id === "string"
+                                    ? saved.participant_id : "",
+                                recovered: true
+                            });
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn("Zwischenstand kann nicht gelesen werden", error);
+                    }
+                }
+            }
+            autosaveReady = true;
+        } else if (actionId && actionId !== lastStorageAction) {
+            lastStorageAction = actionId;
+            if (action === "clear" || action === "reset") {
+                clearStoredDraft(key);
+            }
+        }
+
+        if (action === "clear") {
+            boardElement.innerHTML = "";
+            setFrameHeight(0);
+            return;
+        }
+
+        if (lastParticipantId !== participantId) {
+            lastParticipantId = participantId;
+            // Das Eingabefeld wird unabhängig vom Karten-Board gesichert.
+        }
 
         const board =
             args.board || [];
@@ -2734,13 +2864,24 @@ COMPONENT_HTML = r"""
         } else {
             updateFrameHeight();
         }
+        // Auch ohne verschobene Karten einen Entwurf für die ID anlegen.
+        if (shouldSaveInitial) {
+            shouldSaveInitial = false;
+            saveDraft();
+        }
     }
 
 
-    window.addEventListener(
-        "message",
-        onDataFromPython
-    );
+    // Streamlit kann unmittelbar nach dem Laden mehrfach render senden.
+    // Sequenzielle Verarbeitung verhindert, dass ein neuer Render die
+    // noch laufende Wiederherstellung überholt.
+    let renderQueue = Promise.resolve();
+    window.addEventListener("message", (event) => {
+        if (!event.data || event.data.type !== "streamlit:render") return;
+        renderQueue = renderQueue.then(() => onDataFromPython(event)).catch(error => {
+            console.error("Fehler beim Wiederherstellen des Kartenstands", error);
+        });
+    });
 
 
     window.addEventListener(
@@ -2804,10 +2945,76 @@ _card_sorter_component = (
 )
 
 
-def card_sorter(board, key):
+def render_autosave_storage_bridge():
+    """Tabgebundener Autosave über sessionStorage der Streamlit-Hauptseite."""
+    st.html(r"""
+<script>
+(() => {
+    if (window.__kompchinTabStorage) return;
+    window.__kompchinTabStorage = true;
+    const key = __DRAFT_KEY__;
+
+    // Änderungen an der KompChin-ID unmittelbar sichern, nicht erst bei Enter.
+    document.addEventListener("input", (event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement) ||
+            input.getAttribute("aria-label") !== "KompChin-ID") return;
+        try {
+            const raw = sessionStorage.getItem(key);
+            if (!raw) return;
+            const draft = JSON.parse(raw);
+            if (draft.version !== 1) return;
+            draft.participant_id = input.value;
+            sessionStorage.setItem(key, JSON.stringify(draft));
+        } catch (error) { console.warn("ID-Zwischenspeicherung fehlgeschlagen", error); }
+    }, true);
+
+    window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || data.type !== "kompchin:tab-storage" || data.key !== key ||
+            !event.source || event.source === window) return;
+        const isChild = Array.from(document.querySelectorAll("iframe"))
+            .some(frame => frame.contentWindow === event.source);
+        if (!isChild) return;
+        let value = null;
+        let success = true;
+        try {
+            if (data.action === "get") {
+                value = sessionStorage.getItem(key);
+            } else if (data.action === "set" && typeof data.value === "string") {
+                // Auf ein verzögertes Board-Update darf keine alte ID folgen.
+                const incoming = JSON.parse(data.value);
+                const existing = sessionStorage.getItem(key);
+                if (existing) {
+                    const old = JSON.parse(existing);
+                    if (old.version === 1 && typeof old.participant_id === "string") {
+                        incoming.participant_id = old.participant_id;
+                    }
+                }
+                sessionStorage.setItem(key, JSON.stringify(incoming));
+            } else if (data.action === "remove") {
+                sessionStorage.removeItem(key);
+            } else return;
+        } catch (error) { success = false; }
+        event.source.postMessage({
+            type: "kompchin:tab-storage-response",
+            requestId: data.requestId, value, success
+        }, event.origin === "null" ? "*" : event.origin);
+    });
+})();
+</script>
+""".replace("__DRAFT_KEY__", json.dumps(AUTOSAVE_KEY)), unsafe_allow_javascript=True)
+
+
+def card_sorter(board, key, storage_action="", hidden=False):
     return _card_sorter_component(
         board=board,
         confidence=st.session_state.get("confidence", {}),
+        participant_id=st.session_state.get("participant_id", ""),
+        storage_key=AUTOSAVE_KEY,
+        storage_action=storage_action,
+        storage_action_id=st.session_state.get("storage_action_id", ""),
+        hidden=hidden,
         key=key,
         default={"board": board, "confidence": st.session_state.get("confidence", {})},
     )
@@ -2924,6 +3131,18 @@ ID_TO_LABEL = {
 
 render_admin_area()
 
+# Der Schlüssel trennt Kompetenzen und verschiedene Kartenversionen.
+# IDs statt Antwortinhalte für den Fingerprint verwenden.
+card_fingerprint = hashlib.sha256(
+    json.dumps(sorted((card_id, CARDS[card_id]) for card_id in CARDS),
+               ensure_ascii=False).encode("utf-8")
+).hexdigest()[:16]
+AUTOSAVE_KEY = f"kompchin_tab_draft_v1_{APP_PROFICIENCY}_{card_fingerprint}"
+
+# Wiederhergestellte ID vor dem Erstellen des Text-Widgets setzen.
+if "pending_restored_id" in st.session_state:
+    st.session_state["participant_id"] = st.session_state.pop("pending_restored_id")
+
 if "confidence" not in st.session_state:
     st.session_state.confidence = {}
 
@@ -2953,6 +3172,8 @@ def start_new_entry():
     st.session_state.sorter_generation += 1
     st.session_state.submitted = False
     st.session_state.participant_id = ""
+    st.session_state.storage_action = "reset"
+    st.session_state.storage_action_id = str(uuid.uuid4())
 
 
 st.title(f"Karteikarten-Zuordnung {APP_PROFICIENCY}")
@@ -2963,6 +3184,9 @@ st.write(
     f"Anzahl der Karten: **{len(CARDS)} Karten**, "
     "Niveaus: **Pre-A1, A1, A2, B1 oder B2**."
 )
+
+# Der Sitzungsspeicher-Listener muss vor der iframe-Komponente bereitstehen.
+render_autosave_storage_bridge()
 
 participant_id = st.text_input(
     "KompChin-ID",
@@ -2976,6 +3200,13 @@ participant_id = st.text_input(
 )
 
 if st.session_state.submitted:
+    # Erst nach erfolgreicher Datenbank-Transaktion löschen.
+    card_sorter(
+        st.session_state.board,
+        key=f"autosave_clear_{st.session_state.sorter_generation}",
+        storage_action="clear",
+        hidden=True,
+    )
     st.success(
         "Vielen Dank! Ihre Zuordnung wurde gespeichert. "
         "Sie können die Seite jetzt schließen."
@@ -3030,7 +3261,10 @@ component_result = card_sorter(
         "card_sorter_"
         f"{st.session_state.sorter_generation}"
     ),
+    storage_action=st.session_state.get("storage_action", ""),
 )
+# Eine einmalige Reset-Anweisung wird nur an die neue Komponente geschickt.
+st.session_state.storage_action = ""
 
 if isinstance(component_result, dict):
     incoming_board = component_result.get("board")
@@ -3038,8 +3272,15 @@ if isinstance(component_result, dict):
     if (is_safe_board_payload(incoming_board)
             and isinstance(incoming_confidence, dict)
             and all(k in LABEL_TO_ID and type(v) is bool for k, v in incoming_confidence.items())):
+        recovered_id = component_result.get("participant_id") if component_result.get("recovered") else None
+        if isinstance(recovered_id, str) and len(recovered_id) <= 100:
+            # Nur eine leere ID initial befüllen. Ein aktueller Eingabewert
+            # darf nie durch einen älteren Entwurf überschrieben werden.
+            if not st.session_state.get("participant_id", "").strip():
+                st.session_state.pending_restored_id = recovered_id
         if (incoming_board != st.session_state.board
-                or incoming_confidence != st.session_state.confidence):
+                or incoming_confidence != st.session_state.confidence
+                or "pending_restored_id" in st.session_state):
             st.session_state.board = incoming_board
             st.session_state.confidence = incoming_confidence
             st.rerun()
@@ -3087,6 +3328,8 @@ if reset:
     st.session_state.board = initial_board()
     st.session_state.confidence = {}
     st.session_state.sorter_generation += 1
+    st.session_state.storage_action = "reset"
+    st.session_state.storage_action_id = str(uuid.uuid4())
     st.rerun()
 
 if submit:
