@@ -3133,17 +3133,14 @@ def require_proficiency_selection():
 
     st.title("Fertigkeit auswählen")
     st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
-    with st.form("proficiency_selection_form"):
-        choice = st.selectbox("Fertigkeit", options, index=None,
-                              placeholder="Bitte Fertigkeit auswählen")
-        submit_choice = st.form_submit_button("Weiter", type="primary")
-    if submit_choice:
-        if choice is None:
-            st.warning("Bitte wählen Sie eine Fertigkeit aus.")
-        else:
-            st.session_state["selected_proficiency"] = choice
-            APP_PROFICIENCY = choice
+    st.caption("Verfügbare Fertigkeiten")
+
+    for option in options:
+        if st.button(option, key=f"proficiency_button_{option}"):
+            st.session_state["selected_proficiency"] = option
+            APP_PROFICIENCY = option
             st.rerun()
+
     st.stop()
 
 
