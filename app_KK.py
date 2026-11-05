@@ -16,7 +16,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 
-LEVELS = ["Pre-A1", "A1", "A2", "B1", "B2"]
+LEVELS = ["vor A1", "A1", "A2", "B1", "B2", "C1", "C2"]
+# Historische Daten bleiben in Supabase und in Rohdatenexporten als "Pre-A1" erhalten.
+# Nur bei numerischen Niveauvergleichen gilt die alte Bezeichnung als Stufe 0.
+ANALYSIS_POSITIONS = {**{level: i for i, level in enumerate(LEVELS)}, "Pre-A1": 0}
+
 UNASSIGNED = "Noch nicht zugeordnet"
 
 # Die Fertigkeit wird erst nach der Zugangskontrolle ausgewählt.
@@ -212,112 +216,37 @@ def get_connection():
 
 @st.cache_resource
 def init_db():
-    """
-    Prüft die Grundstruktur und migriert bei Bedarf
-    assignments.category -> assignments.level.
-    """
+    """Nur lesende Prüfung des Schemas; keine Änderungen an Supabase."""
+    required = {
+        "submissions": {"submission_id", "participant_id", "submitted_at_utc", "proficiency"},
+        "assignments": {"submission_id", "card_id", "level", "confidence"},
+        "cards": {"card_id", "card_text", "reference_level", "item_category",
+                  "category_number", "level_number", "sort_order", "proficiency"},
+    }
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS public.submissions (
-                    submission_id UUID PRIMARY KEY,
-                    participant_id TEXT NOT NULL,
-                    submitted_at_utc TIMESTAMPTZ NOT NULL,
-                    proficiency TEXT NOT NULL DEFAULT 'Lesen',
-                    UNIQUE (participant_id, proficiency)
-                )
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.assignments (
-                    submission_id UUID NOT NULL
-                        REFERENCES public.submissions(submission_id)
-                        ON DELETE CASCADE,
-                    card_id TEXT NOT NULL,
-                    level TEXT NOT NULL
-                        CHECK (level IN ('Pre-A1', 'A1', 'A2', 'B1', 'B2')),
-                    confidence BOOLEAN,
-                    PRIMARY KEY (submission_id, card_id)
-                )
-                """
-            )
-
-            # Bestehende Installation automatisch von "category" auf "level" migrieren.
-            cur.execute(
-                """
-                SELECT column_name
+                SELECT table_name, column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public'
-                  AND table_name = 'assignments'
-                  AND column_name IN ('category', 'level')
+                  AND table_name IN ('submissions', 'assignments', 'cards')
                 """
             )
-            assignment_columns = {
-                row[0]
-                for row in cur.fetchall()
-            }
-
-            if (
-                "category" in assignment_columns
-                and "level" not in assignment_columns
-            ):
-                cur.execute(
-                    """
-                    ALTER TABLE public.assignments
-                    RENAME COLUMN category TO level
-                    """
-                )
-
-            cur.execute(
-                """
-                ALTER TABLE public.assignments
-                ADD COLUMN IF NOT EXISTS confidence BOOLEAN
-                """
-            )
-
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.cards (
-                    card_id TEXT PRIMARY KEY,
-                    card_text TEXT NOT NULL,
-                    reference_level TEXT NOT NULL
-                        CHECK (reference_level IN ('Pre-A1', 'A1', 'A2', 'B1', 'B2')),
-                    item_category TEXT NOT NULL,
-                    category_number SMALLINT NOT NULL,
-                    level_number SMALLINT NOT NULL,
-                    sort_order SMALLINT NOT NULL,
-                    proficiency TEXT NOT NULL DEFAULT 'Lesen',
-                    UNIQUE (proficiency, sort_order)
-                )
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE public.submissions
-                ENABLE ROW LEVEL SECURITY
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE public.assignments
-                ENABLE ROW LEVEL SECURITY
-                """
-            )
-
-            cur.execute(
-                """
-                ALTER TABLE public.cards
-                ENABLE ROW LEVEL SECURITY
-                """
-            )
-
+            found = {}
+            for table, column in cur.fetchall():
+                found.setdefault(table, set()).add(column)
+    missing = {
+        table: sorted(columns - found.get(table, set()))
+        for table, columns in required.items()
+        if columns - found.get(table, set())
+    }
+    if missing:
+        raise RuntimeError(
+            "Datenbankschema unvollständig (bitte separat vorbereiten): "
+            + str(missing)
+        )
     return True
-
 
 
 @st.cache_data(ttl=300)
@@ -631,6 +560,7 @@ def build_card_analysis(raw_df):
 
         counts_series = (
             card_rows["participant_level"]
+            .replace({"Pre-A1": "vor A1"})
             .value_counts()
             .reindex(
                 LEVELS,
@@ -677,12 +607,12 @@ def build_card_analysis(raw_df):
             )
 
             reference_match = (
-                counts[reference_level]
+                counts["vor A1" if reference_level == "Pre-A1" else reference_level]
                 / number_ratings
                 * 100
             )
 
-            reference_position = level_positions[reference_level]
+            reference_position = ANALYSIS_POSITIONS[reference_level]
             mean_abs_deviation = (
                 sum(
                     counts[level]
@@ -693,7 +623,7 @@ def build_card_analysis(raw_df):
             )
 
             majority_matches_reference = (
-                reference_level in modal_levels
+                ("vor A1" if reference_level == "Pre-A1" else reference_level) in modal_levels
             )
         else:
             majority = "—"
@@ -728,11 +658,7 @@ def build_card_analysis(raw_df):
                 "Referenzniveau": reference_level,
                 "Level-Nr": meta["level_number"],
                 "Bewertungen": number_ratings,
-                "Pre-A1": counts["Pre-A1"],
-                "A1": counts["A1"],
-                "A2": counts["A2"],
-                "B1": counts["B1"],
-                "B2": counts["B2"],
+                **{level: counts[level] for level in LEVELS},
                 "Modalniveau": majority,
                 "Modalanteil %": round(agreement, 1),
                 "Spannweite (Stufen)": spread,
@@ -781,10 +707,7 @@ def build_rater_level_analysis(raw_df, participant_id):
     if df.empty:
         return pd.DataFrame(columns=columns)
 
-    level_positions = {
-        level: index
-        for index, level in enumerate(LEVELS)
-    }
+    level_positions = ANALYSIS_POSITIONS
 
     df["abweichung"] = (
         df["participant_level"].map(level_positions)
@@ -829,7 +752,7 @@ def build_rater_level_analysis(raw_df, participant_id):
 
     result["Referenzniveau"] = pd.Categorical(
         result["Referenzniveau"],
-        categories=LEVELS,
+        categories=["Pre-A1", *LEVELS],
         ordered=True,
     )
 
@@ -862,7 +785,8 @@ def build_confidence_level_analysis(raw_df):
     columns = ["Referenzniveau", "Bewertungen", "Mit Angabe", "Sicher (!)",
                "Unsicher (?)", "Ohne Angabe", "Sicher %", "Unsicher %"]
     rows = []
-    for level in LEVELS:
+    reference_levels = (["Pre-A1"] if raw_df["reference_level"].eq("Pre-A1").any() else []) + LEVELS
+    for level in reference_levels:
         subset = raw_df[raw_df["reference_level"] == level]
         total = len(subset)
         secure = int(subset["confidence"].eq(True).sum())
@@ -945,7 +869,7 @@ def build_reliability_analysis(raw_df, bootstrap_samples=500):
     for _, group in data.groupby("card_id"):
         if len(group) < 2:
             continue
-        counts = group["participant_level"].value_counts()
+        counts = group["participant_level"].replace({"Pre-A1": "vor A1"}).value_counts()
         counts_by_card.append([int(counts.get(level, 0)) for level in LEVELS])
 
     if not counts_by_card:
@@ -987,7 +911,7 @@ def build_spearman_matrix(raw_df):
     """Paarweise Rangkorrelation über gemeinsame Karten; konstante Reihen undefiniert."""
     if raw_df.empty:
         return pd.DataFrame()
-    order = {level: i for i, level in enumerate(LEVELS)}
+    order = ANALYSIS_POSITIONS
     pivot = raw_df.assign(level_index=raw_df["participant_level"].map(order)).pivot_table(
         index="card_id", columns="participant_id", values="level_index", aggfunc="first"
     )
@@ -997,7 +921,7 @@ def build_spearman_matrix(raw_df):
 def build_reference_summary(raw_df):
     if raw_df.empty:
         return {"Referenzübereinstimmung %": None, "Ø Referenzabweichung (Stufen)": None}
-    order = {level: i for i, level in enumerate(LEVELS)}
+    order = ANALYSIS_POSITIONS
     correct = raw_df["participant_level"].eq(raw_df["reference_level"])
     distance = (raw_df["participant_level"].map(order) - raw_df["reference_level"].map(order)).abs()
     return {"Referenzübereinstimmung %": round(100 * correct.mean(), 1),
@@ -1072,7 +996,7 @@ def render_admin_dashboard(rows):
             y.metric("Ø Referenzabweichung", f"{reference_summary['Ø Referenzabweichung (Stufen)']:.2f} Stufen")
         st.caption("Referenzübereinstimmung: Anteil der Zuordnungen, die exakt dem hinterlegten Referenzniveau entsprechen. "
                    "Ø Referenzabweichung: durchschnittlicher absoluter Abstand zwischen vergebenem und Referenzniveau; "
-                   "eine Stufe entspricht einem Schritt in Pre-A1 → A1 → A2 → B1 → B2.")
+                   "eine Stufe entspricht einem Schritt in vor A1 → A1 → A2 → B1 → B2 → C1 → C2.")
 
         st.divider()
         st.subheader("Downloads")
@@ -1270,7 +1194,7 @@ def render_admin_dashboard(rows):
                     format="%d",
                     help=(
                         "Abstand zwischen dem niedrigsten und höchsten "
-                        "vergebenen Niveau (0 bis 4 Stufen)."
+                        "vergebenen Niveau (0 bis 6 Stufen)."
                     ),
                 ),
                 
@@ -1291,7 +1215,7 @@ def render_admin_dashboard(rows):
                         "aller möglichen Rater:innen-Paare für dieselbe Karte. "
                         "0 bedeutet vollständige Übereinstimmung. "
                         "Je höher der Wert, desto stärker unterscheiden sich "
-                        "die vergebenen Niveaus (maximal 4 Stufen)."
+                        "die vergebenen Niveaus (maximal 6 Stufen)."
                     ),
                 ),
 
@@ -1301,7 +1225,7 @@ def render_admin_dashboard(rows):
                     format="%.1f %%",
                     help=(
                         "Verteilung der Einstufungen "
-                        "über die fünf Niveaus; höhere "
+                        "über die sieben Niveaus; höhere "
                         "Werte bedeuten eine "
                         "gleichmäßigere Streuung."
                     ),
@@ -1323,9 +1247,9 @@ def render_admin_dashboard(rows):
         
         **Spannweite (Stufen):** Abstand zwischen der niedrigsten und höchsten vergebenen Stufe.  
         
-        **Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte (0 = identische Niveaus; maximal 4 Stufen).  
+        **Ø paarweiser Niveauabstand:** durchschnittlicher Abstand aller Rater-Paare auf derselben Karte (0 = identische Niveaus; maximal 6 Stufen).  
         
-        **Entropie %:** Verteilung der Einstufungen über die fünf Niveaus; höhere Werte bedeuten eine gleichmäßigere Streuung.  
+        **Entropie %:** Verteilung der Einstufungen über die sieben Niveaus; höhere Werte bedeuten eine gleichmäßigere Streuung.  
         
         **Sicher/Unsicher/Ohne Angabe:** Häufigkeiten der Sicherheitseinschätzung; Sicher % und Unsicher % beziehen sich nur auf Bewertungen mit ausdrücklicher Sicherheitsangabe (! oder ?). Ohne Angabe wird separat gezählt; ohne explizite Angaben bleiben die Quoten leer.
         """)
@@ -1358,7 +1282,7 @@ def render_admin_dashboard(rows):
 
             # Stimmen pro Niveau zählen
             counts = (
-                card_ratings
+                card_ratings.replace({"Pre-A1": "vor A1"})
                 .value_counts()
                 .reindex(LEVELS, fill_value=0)
             )
@@ -1840,10 +1764,7 @@ def build_rater_analysis(raw_df):
     if raw_df.empty:
         return pd.DataFrame(columns=columns)
 
-    level_positions = {
-        level: index
-        for index, level in enumerate(LEVELS)
-    }
+    level_positions = ANALYSIS_POSITIONS
 
     df = raw_df.copy()
 
@@ -2022,7 +1943,7 @@ COMPONENT_HTML = r"""
     }
 
     /*
-    Sechs Spalten über die verfügbare Breite.
+    Acht Spalten über die verfügbare Breite.
 
     Die erste Spalte erhält etwas mehr Raum,
     weil dort anfangs alle Karten liegen.
@@ -2032,7 +1953,7 @@ COMPONENT_HTML = r"""
 
         grid-template-columns:
             minmax(220px, 1.45fr)
-            repeat(5, minmax(125px, 1fr));
+            repeat(7, minmax(125px, 1fr));
 
         gap: 10px;
 
@@ -2173,15 +2094,15 @@ COMPONENT_HTML = r"""
     Auf kleineren Bildschirmen darf die
     Komponente horizontal scrollen.
     Auf einem normalen Desktop werden alle
-    sechs Spalten nebeneinander gezeigt.
+    acht Spalten nebeneinander gezeigt.
     */
-    @media (max-width: 1050px) {
+    @media (max-width: 1380px) {
         body {
             overflow-x: auto;
         }
 
         #board {
-            min-width: 1000px;
+            min-width: 1330px;
         }
     }
 </style>
@@ -3077,37 +2998,40 @@ def require_access_code():
         del st.query_params["access_token"]
         st.rerun()
         
-    st.title("🔐 Zugang zur Umfrage")
-    st.write(
-        "Bitte geben Sie den Zugangscode ein, "
-        "um zu beginnen."
-    )
-
-    with st.form("access_form"):
-        entered_code = st.text_input(
-            "Zugangscode",
-            type="password",
-        )
-        submitted = st.form_submit_button(
-            "Weiter",
-            type="primary",
+    _, mitte, _ = st.columns([1, 1.5, 1])
+    with mitte:
+        st.title("🔐 Zugang zur Umfrage")
+        st.write(
+            "Bitte geben Sie den Zugangscode ein, "
+            "um zu beginnen."
         )
 
-    if submitted:
-        try:
-            correct_code = str(st.secrets["ACCESS_CODE"])
-        except Exception:
-            st.error("Es wurde noch kein Zugangscode konfiguriert.")
-            st.stop()
+        with st.form("access_form"):
+            entered_code = st.text_input(
+                "Zugangscode",
+                type="password",
+            )
+            submitted = st.form_submit_button(
+                "Weiter",
+                type="primary",
+                use_container_width=True,
+            )
 
-        if hmac.compare_digest(
-            entered_code.strip(),
-            correct_code,
-        ):
-            st.session_state.access_granted = True
-            st.rerun()
-        else:
-            st.error("Der Zugangscode ist nicht korrekt.")
+        if submitted:
+            try:
+                correct_code = str(st.secrets["ACCESS_CODE"])
+            except Exception:
+                st.error("Es wurde noch kein Zugangscode konfiguriert.")
+                st.stop()
+
+            if hmac.compare_digest(
+                entered_code.strip(),
+                correct_code,
+            ):
+                st.session_state.access_granted = True
+                st.rerun()
+            else:
+                st.error("Der Zugangscode ist nicht korrekt.")
 
     st.stop()
 
@@ -3131,15 +3055,17 @@ def require_proficiency_selection():
     st.session_state.pop("selected_proficiency", None)
     APP_PROFICIENCY = None
 
-    st.title("Fertigkeit auswählen")
-    st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
-    st.caption("Verfügbare Fertigkeiten")
+    _, mitte, _ = st.columns([1, 1.5, 1])
+    with mitte:
+        st.title("Fertigkeit auswählen")
+        st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
+        st.caption("Verfügbare Fertigkeiten")
 
-    for option in options:
-        if st.button(option, key=f"proficiency_button_{option}"):
-            st.session_state["selected_proficiency"] = option
-            APP_PROFICIENCY = option
-            st.rerun()
+        for option in options:
+            if st.button(option, key=f"proficiency_button_{option}", use_container_width=True):
+                st.session_state["selected_proficiency"] = option
+                APP_PROFICIENCY = option
+                st.rerun()
 
     st.stop()
 
@@ -3236,7 +3162,7 @@ st.write(
     "in dem eine minimal kompetente Leserin bzw. ein minimal kompetenter Leser "
     "die beschriebene Leseleistung ohne Unterstützung zuverlässig erbringt. "
     f"Anzahl der Karten: **{len(CARDS)} Karten**, "
-    "Niveaus: **Pre-A1, A1, A2, B1 oder B2**."
+    "Niveaus: **vor A1, A1, A2, B1, B2, C1 oder C2**."
 )
 
 # Der Sitzungsspeicher-Listener muss vor der iframe-Komponente bereitstehen.
