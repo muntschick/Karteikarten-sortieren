@@ -3218,37 +3218,43 @@ def require_proficiency_selection():
     st.session_state.pop("selected_proficiency", None)
     APP_PROFICIENCY = None
 
-    buttons_links, _ = st.columns([1, 1])
-    
-    with buttons_links:
-    
-        # Fertigkeiten-Buttons
-        for i, (option, _) in enumerate(proficiency_entries):
-            with st.container(key=f"skill_color_{i}"):
-                if st.button(
-                    option,
-                    key=f"proficiency_button_{i}",
-                    use_container_width=True,
-                ):
-                    st.session_state["selected_proficiency"] = option
-                    APP_PROFICIENCY = option
-                    st.rerun()
-    
+    _, mitte, _ = st.columns([1, 1.5, 1])
+    with mitte:
+        st.title("Fertigkeit auswählen")
+        st.write("Bitte wählen Sie die Fertigkeit aus, die Sie bearbeiten möchten.")
+        st.caption("Verfügbare Fertigkeiten")
+
+        button_css = []
+        for i, (_, color) in enumerate(proficiency_entries):
+            button_css.append(
+                f".st-key-skill_color_{i} button {{"
+                f"background: {color} !important; color: #243047 !important; "
+                f"border: 1px solid {color} !important; "
+                "border-radius: 10px !important; font-weight: 600 !important; "
+                "min-height: 3.65rem !important; padding: 0.85rem 1.2rem !important;}"
+                f".st-key-skill_color_{i} button p {{font-size: 1.12rem !important; "
+                "font-weight: 600 !important; line-height: 1.35 !important;}"
+                f".st-key-skill_color_{i} button:hover {{filter: brightness(0.94);}}"
+            )
+        st.markdown("<style>" + "\n".join(button_css) + "</style>",
+                    unsafe_allow_html=True)
+        # Buttons nur halb so breit wie der mittige Auswahlbereich, aber zentriert.
+        _, buttons_mitte, _ = st.columns([1, 2, 1])
+        with buttons_mitte:
+            for i, (option, _) in enumerate(proficiency_entries):
+                with st.container(key=f"skill_color_{i}"):
+                    if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
+                        st.session_state["selected_proficiency"] = option
+                        APP_PROFICIENCY = option
+                        st.rerun()
+
         st.divider()
-    
-        # Administration in derselben Breite
         with st.expander("⚙️ Administration"):
             with st.form("admin_login_selection"):
-                admin_code = st.text_input(
-                    "Admin-Code",
-                    type="password",
-                )
-    
+                admin_code = st.text_input("Admin-Code", type="password")
                 admin_submit = st.form_submit_button(
-                    "Admin-Dashboard öffnen",
-                    use_container_width=True,
+                    "Admin-Dashboard öffnen", use_container_width=True
                 )
-    
             if admin_submit and try_admin_login(admin_code):
                 st.session_state["admin_granted"] = True
                 st.session_state["admin_dashboard_open"] = True
