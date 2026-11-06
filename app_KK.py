@@ -3037,7 +3037,7 @@ def require_access_code():
             )
             submitted = st.form_submit_button(
                 "Weiter",
-                type="primary",
+                type="secondary",
                 use_container_width=True,
             )
 
