@@ -3147,6 +3147,7 @@ def render_proficiency_comparison(proficiencies):
     b.metric("Abgaben insgesamt", int(overview["Abgaben"].sum()))
     c.metric("Zuordnungen insgesamt", int(overview["Zuordnungen"].sum()))
     st.dataframe(overview, use_container_width=True, hide_index=True,
+                 height=full_table_height(overview),
                  column_config={"Referenzübereinstimmung %": st.column_config.NumberColumn(format="%.1f %%")})
     st.caption("Referenzübereinstimmung und mittlere Abweichung sind über die Zuordnungen "
                "je Fertigkeit berechnet. "
@@ -3167,28 +3168,31 @@ def render_central_admin():
         st.session_state["admin_proficiency"] = current
     APP_PROFICIENCY = current
     st.title("📊 Zentrales Admin-Dashboard")
-    selector_col, button_col = st.columns([4, 1])
+    selector_col, _ = st.columns([4, 1])
     with selector_col:
         chosen = st.selectbox("Fertigkeit für die Detailauswertung", names,
                               index=names.index(current), key="central_admin_selector")
-    with button_col:
-        st.write("")
-        if st.button("← Fertigkeiten-Auswahl", use_container_width=True):
+    if chosen != current:
+        st.session_state["admin_proficiency"] = chosen
+        st.rerun()
+
+    refresh_col, back_col, _ = st.columns([1, 1, 1.4])
+    with refresh_col:
+        if st.button("🔄 Alle Daten aktualisieren", use_container_width=True,
+                     help="Aktualisiert Karten, Abgaben und Fertigkeitenvergleich"):
+            load_cards.clear()
+            load_results.clear()
+            load_all_proficiency_data.clear()
+            # Daten-Caches leeren; abhängige Auswertungen erkennen neue DataFrames.
+            st.rerun()
+    with back_col:
+        if st.button("zurück zur Fertigkeiten-Auswahl", use_container_width=True):
             # Die App-Anmeldung bleibt bestehen; für erneuten Admin-Zugang
             # ist eine neue Admin-Code-Eingabe erforderlich.
             st.session_state["admin_granted"] = False
             st.session_state["admin_dashboard_open"] = False
             st.session_state.pop("central_admin_selector", None)
             st.rerun()
-    if chosen != current:
-        st.session_state["admin_proficiency"] = chosen
-        st.rerun()
-    if st.button("🔄 Alle Daten aktualisieren", help="Aktualisiert Karten, Abgaben und Fertigkeitenvergleich"):
-        load_cards.clear()
-        load_results.clear()
-        load_all_proficiency_data.clear()
-        # Daten-Caches leeren; abhängige Auswertungen erkennen neue DataFrames.
-        st.rerun()
     CARDS, CARD_METADATA = load_cards(APP_PROFICIENCY)
     LABEL_TO_ID = {f"{cid} · {label}": cid for cid, label in CARDS.items()}
     ID_TO_LABEL = {cid: label for label, cid in LABEL_TO_ID.items()}
@@ -3234,12 +3238,15 @@ def require_proficiency_selection():
             )
         st.markdown("<style>" + "\n".join(button_css) + "</style>",
                     unsafe_allow_html=True)
-        for i, (option, _) in enumerate(proficiency_entries):
-            with st.container(key=f"skill_color_{i}"):
-                if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
-                    st.session_state["selected_proficiency"] = option
-                    APP_PROFICIENCY = option
-                    st.rerun()
+        # Buttons nur halb so breit wie der mittige Auswahlbereich, aber zentriert.
+        _, buttons_mitte, _ = st.columns([1, 2, 1])
+        with buttons_mitte:
+            for i, (option, _) in enumerate(proficiency_entries):
+                with st.container(key=f"skill_color_{i}"):
+                    if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
+                        st.session_state["selected_proficiency"] = option
+                        APP_PROFICIENCY = option
+                        st.rerun()
 
         st.divider()
         with st.expander("⚙️ Administration"):
@@ -3355,7 +3362,7 @@ if not hasattr(custom_instructions, "get"):
     st.stop()
 default_instructions = (
     "Ordnen Sie die Deskriptoren dem Kompetenzniveau zu, "
-    "auf dem ein:e minimal kompetente:r Lerner:in die beschriebene Leistung "
+    "auf dem eine minimal kompetente Person die beschriebene Leistung "
     "ohne Unterstützung zuverlässig erbringen kann."
 )
 st.write(str(custom_instructions.get(APP_PROFICIENCY, default_instructions)))
