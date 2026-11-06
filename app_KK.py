@@ -3024,7 +3024,7 @@ def require_access_code():
         
     _, mitte, _ = st.columns([1, 1.5, 1])
     with mitte:
-        st.title("🔐 Zugang zur Umfrage")
+        st.title("🔐 Zugang geschützt")
         st.write(
             "Bitte geben Sie den Zugangscode ein, "
             "um zu beginnen."
