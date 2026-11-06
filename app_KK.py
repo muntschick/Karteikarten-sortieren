@@ -3238,27 +3238,41 @@ def require_proficiency_selection():
             )
         st.markdown("<style>" + "\n".join(button_css) + "</style>",
                     unsafe_allow_html=True)
-        # Buttons nur halb so breit wie der mittige Auswahlbereich, aber zentriert.
-        _, buttons_mitte, _ = st.columns([1, 2, 1])
-        with buttons_mitte:
-            for i, (option, _) in enumerate(proficiency_entries):
-                with st.container(key=f"skill_color_{i}"):
-                    if st.button(option, key=f"proficiency_button_{i}", use_container_width=True):
-                        st.session_state["selected_proficiency"] = option
-                        APP_PROFICIENCY = option
+            # Buttons linksbündig und halb so breit wie der mittlere Bereich
+            buttons_links, _ = st.columns([1, 1])
+    
+            with buttons_links:
+    
+                # Fertigkeiten-Buttons
+                for i, (option, _) in enumerate(proficiency_entries):
+                    with st.container(key=f"skill_color_{i}"):
+                        if st.button(
+                            option,
+                            key=f"proficiency_button_{i}",
+                            use_container_width=True,
+                        ):
+                            st.session_state["selected_proficiency"] = option
+                            APP_PROFICIENCY = option
+                            st.rerun()
+    
+                st.divider()
+    
+                # Administration in derselben Breite
+                with st.expander("⚙️ Administration"):
+                    with st.form("admin_login_selection"):
+                        admin_code = st.text_input(
+                            "Admin-Code",
+                            type="password",
+                        )
+                        admin_submit = st.form_submit_button(
+                            "Admin-Dashboard öffnen",
+                            use_container_width=True,
+                        )
+    
+                    if admin_submit and try_admin_login(admin_code):
+                        st.session_state["admin_granted"] = True
+                        st.session_state["admin_dashboard_open"] = True
                         st.rerun()
-
-        st.divider()
-        with st.expander("⚙️ Administration"):
-            with st.form("admin_login_selection"):
-                admin_code = st.text_input("Admin-Code", type="password")
-                admin_submit = st.form_submit_button(
-                    "Admin-Dashboard öffnen", use_container_width=True
-                )
-            if admin_submit and try_admin_login(admin_code):
-                st.session_state["admin_granted"] = True
-                st.session_state["admin_dashboard_open"] = True
-                st.rerun()
 
     st.stop()
 
