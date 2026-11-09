@@ -3251,21 +3251,14 @@ def require_proficiency_selection():
             "}"
         )
 
-    # Begrenzte Breite, aber immer linksbündig
+    # Begrenzte Breite, mittig
     layout_css = """
     .st-key-proficiency_panel {
-        width: calc(100% - 3rem) !important;
+        width: 100% !important;
         max-width: 500px !important;
-        margin-left: 3rem !important;
+        margin-left: auto !important;
         margin-right: auto !important;
         box-sizing: border-box !important;
-    }
-    
-    @media (max-width: 600px) {
-    .st-key-proficiency_panel {
-        width: calc(100% - 1.5rem) !important;
-        margin-left: 1.5rem !important;
-    }
     }
     """
 
