@@ -3251,22 +3251,8 @@ def require_proficiency_selection():
             "}"
         )
 
-    # Begrenzte Breite, mittig
-    layout_css = """
-    .st-key-proficiency_panel {
-        width: 100% !important;
-        max-width: 500px !important;
-        margin-left: auto !important;
-        margin-right: auto !important;
-        box-sizing: border-box !important;
-    }
-    """
-
     st.markdown(
-        "<style>"
-        + layout_css
-        + "\n".join(button_css)
-        + "</style>",
+        "<style>" + "\n".join(button_css) + "</style>",
         unsafe_allow_html=True,
     )
 
@@ -3274,52 +3260,53 @@ def require_proficiency_selection():
     # Fertigkeiten-Auswahl
     # --------------------------------------------------
 
-    with st.container(key="proficiency_panel"):
+    with st.container(horizontal_alignment="center"):
+        with st.container(key="proficiency_panel", width=500):
 
-        st.title("Fertigkeit auswählen")
-
-        st.write(
-            "Bitte wählen Sie die Fertigkeit aus, "
-            "die Sie bearbeiten möchten."
-        )
-
-        st.caption("Verfügbare Fertigkeiten")
-
-        # Farbige Fertigkeiten-Buttons
-        for i, (option, _) in enumerate(proficiency_entries):
-
-            with st.container(key=f"skill_color_{i}"):
-
-                if st.button(
-                    option,
-                    key=f"proficiency_button_{i}",
-                    use_container_width=True,
-                ):
-                    st.session_state["selected_proficiency"] = option
-                    APP_PROFICIENCY = option
+            st.title("Fertigkeit auswählen")
+    
+            st.write(
+                "Bitte wählen Sie die Fertigkeit aus, "
+                "die Sie bearbeiten möchten."
+            )
+    
+            st.caption("Verfügbare Fertigkeiten")
+    
+            # Farbige Fertigkeiten-Buttons
+            for i, (option, _) in enumerate(proficiency_entries):
+    
+                with st.container(key=f"skill_color_{i}"):
+    
+                    if st.button(
+                        option,
+                        key=f"proficiency_button_{i}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["selected_proficiency"] = option
+                        APP_PROFICIENCY = option
+                        st.rerun()
+    
+            st.divider()
+    
+            # Administration
+            with st.expander("⚙️ Administration"):
+    
+                with st.form("admin_login_selection"):
+    
+                    admin_code = st.text_input(
+                        "Admin-Code",
+                        type="password"
+                    )
+    
+                    admin_submit = st.form_submit_button(
+                        "Admin-Dashboard öffnen",
+                        use_container_width=True
+                    )
+    
+                if admin_submit and try_admin_login(admin_code):
+                    st.session_state["admin_granted"] = True
+                    st.session_state["admin_dashboard_open"] = True
                     st.rerun()
-
-        st.divider()
-
-        # Administration
-        with st.expander("⚙️ Administration"):
-
-            with st.form("admin_login_selection"):
-
-                admin_code = st.text_input(
-                    "Admin-Code",
-                    type="password"
-                )
-
-                admin_submit = st.form_submit_button(
-                    "Admin-Dashboard öffnen",
-                    use_container_width=True
-                )
-
-            if admin_submit and try_admin_login(admin_code):
-                st.session_state["admin_granted"] = True
-                st.session_state["admin_dashboard_open"] = True
-                st.rerun()
 
     st.stop()
 
